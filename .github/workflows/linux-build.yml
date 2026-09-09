@@ -62,16 +62,36 @@ jobs:
           npm_config_arch: ${{ matrix.arch }}
           TARGET_ARCH: ${{ matrix.arch }}
 
-      - name: Upload all artifacts
+      - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: GitHubDesktop-Linux-${{ matrix.arch }}
-          path: |
-            dist/*.AppImage
-            dist/*.deb
-            dist/*.rpm
-            dist/*.pkg.tar.zst
-          if-no-files-found: error
+          name: GitHubDesktop-Linux-AppImage-${{ matrix.arch }}
+          path: dist/*.AppImage
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-rpm-${{ matrix.arch }}
+          path: dist/*.rpm
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Arch Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-arch-${{ matrix.arch }}
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: warn
           retention-days: 30
 
   release:
