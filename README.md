@@ -1,8 +1,15 @@
-# [GitHub Desktop](https://desktop.github.com)
+# GitHub Desktop for Linux (unofficial)
+
+[English](README.md) | [简体中文](README_ZH-CN.md)
+
+> **⚠️ Important**  
+> This branch is community-maintained and **is not an official GitHub release for Linux**. All Linux packaging, adaptation, and testing are contributed by the community. Use at your own discretion.
 
 [GitHub Desktop](https://desktop.github.com/) is an open-source [Electron](https://www.electronjs.org/)-based
 GitHub app. It is written in [TypeScript](https://www.typescriptlang.org) and
 uses [React](https://reactjs.org/).
+
+**This branch adds Linux support (unofficial) to GitHub Desktop**, including AppImage, Debian/Ubuntu (.deb), Fedora/RHEL (.rpm), and Arch Linux (.pkg.tar.zst) packages for both x86_64 and arm64 architectures.
 
 <picture>
   <source
@@ -12,11 +19,13 @@ uses [React](https://reactjs.org/).
   <img
     width="1072"
     src="https://user-images.githubusercontent.com/634063/202742985-bb3b3b94-8aca-404a-8d8a-fd6a6f030672.png"
-    alt="A screenshot of the GitHub Desktop application showing changes being viewed and committed with two attributed co-authors"
+    alt="A screenshot of the GitHub Desktop application"
   />
 </picture>
 
-## Where can I get it?
+## Downloads
+
+### Official Release
 
 Download the official installer for your operating system:
 
@@ -25,75 +34,110 @@ Download the official installer for your operating system:
  - [Windows](https://central.github.com/deployments/desktop/desktop/latest/win32)
  - [Windows machine-wide install](https://central.github.com/deployments/desktop/desktop/latest/win32?format=msi)
 
-Linux is not officially supported; however, you can find installers created for Linux from a fork of GitHub Desktop in the [Community Releases](https://github.com/desktop/desktop#community-releases) section.
+### Linux (This Branch)
 
-### Beta Channel
+| Format | x86_64 | arm64 |
+|--------|--------|-------|
+| AppImage | ✅ | ✅ |
+| Debian/Ubuntu (.deb) | ✅ | ✅ |
+| Fedora/RHEL (.rpm) | ✅ | ✅ |
+| Arch Linux (.pkg.tar.zst) | ✅ | ✅ |
 
-Want to test out new features and get fixes before everyone else? Install the
-beta channel to get access to early builds of Desktop:
+Go to the [Releases](https://github.com/venti1112/github_desktop_for_linux/releases) page and download the build for your required architecture and format.
 
- - [macOS](https://central.github.com/deployments/desktop/desktop/latest/darwin?env=beta)
- - [macOS (Apple silicon)](https://central.github.com/deployments/desktop/desktop/latest/darwin-arm64?env=beta)
- - [Windows](https://central.github.com/deployments/desktop/desktop/latest/win32?env=beta)
- - [Windows (ARM64)](https://central.github.com/deployments/desktop/desktop/latest/win32-arm64?env=beta)
+## Installation
 
-The release notes for the latest beta versions are available [here](https://desktop.github.com/release-notes/?env=beta).
+### AppImage (Universal)
 
-### Past Releases
-You can find past releases at https://desktop.githubusercontent.com. After installation of a past version, the auto update functionality will attempt to download the latest version. 
+AppImage runs on most Linux distributions without installation.
 
-### Community Releases
+```bash
+# Download the AppImage
+chmod +x GitHubDesktop-linux-x86_64-*.AppImage
 
-There are several community-supported package managers that can be used to
-install GitHub Desktop:
- - Windows users can install using [winget](https://docs.microsoft.com/en-us/windows/package-manager/winget/) `c:\> winget install github-desktop` or [Chocolatey](https://chocolatey.org/) `c:\> choco install github-desktop`
- - macOS users can install using [Homebrew](https://brew.sh/) package manager:
-      `$ brew install --cask github`
+# Run directly
+./GitHubDesktop-linux-x86_64-*.AppImage
+```
 
-Installers for various Linux distributions can be found on the
-[`shiftkey/desktop`](https://github.com/shiftkey/desktop) fork.
+### Debian / Ubuntu
 
-## Is GitHub Desktop right for me? What are the primary areas of focus?
+```bash
+# x86_64
+sudo apt install ./GitHubDesktop-linux-amd64-*.deb
 
-[This document](https://github.com/desktop/desktop/blob/development/docs/process/what-is-desktop.md) describes the focus of GitHub Desktop and who the product is most useful for.
+# arm64
+sudo apt install ./GitHubDesktop-linux-arm64-*.deb
+```
 
-## I have a problem with GitHub Desktop
+### Fedora / RHEL
 
-Note: The [GitHub Desktop Code of Conduct](https://github.com/desktop/desktop/blob/development/CODE_OF_CONDUCT.md) applies in all interactions relating to the GitHub Desktop project.
+```bash
+# x86_64
+sudo rpm -i GitHubDesktop-linux-x86_64-*.rpm
 
-First, please search the [open issues](https://github.com/desktop/desktop/issues?q=is%3Aopen)
-and [closed issues](https://github.com/desktop/desktop/issues?q=is%3Aclosed)
-to see if your issue hasn't already been reported (it may also be fixed).
+# arm64
+sudo rpm -i GitHubDesktop-linux-aarch64-*.rpm
+```
 
-There is also a list of [known issues](https://github.com/desktop/desktop/blob/development/docs/known-issues.md)
-that are being tracked against Desktop, and some of these issues have workarounds.
+### Arch Linux
 
-If you can't find an issue that matches what you're seeing, open a [new issue](https://github.com/desktop/desktop/issues/new/choose),
-choose the right template and provide us with enough information to investigate
-further.
+```bash
+# x86_64
+sudo pacman -U GitHubDesktop-linux-x86_64-*.pkg.tar.zst
 
-## The issue I reported isn't fixed yet. What can I do?
+# arm64
+sudo pacman -U GitHubDesktop-linux-aarch64-*.pkg.tar.zst
+```
 
-If nobody has responded to your issue in a few days, you're welcome to respond to it with a friendly ping in the issue. Please do not respond more than a second time if nobody has responded. The GitHub Desktop maintainers are constrained in time and resources, and diagnosing individual configurations can be difficult and time consuming. While we'll try to at least get you pointed in the right direction, we can't guarantee we'll be able to dig too deeply into any one person's issue.
+## Building from Source
 
-## How can I contribute to GitHub Desktop?
+### Prerequisites
 
-The [CONTRIBUTING.md](./.github/CONTRIBUTING.md) document will help you get setup and
-familiar with the source. The [documentation](docs/) folder also contains more
-resources relevant to the project.
+- [Node.js](https://nodejs.org/) >= 24.x
+- [Yarn](https://yarnpkg.com/) 1.x
+- Linux build tools:
+  - Debian/Ubuntu: `sudo apt-get install dpkg-dev fakeroot`
+  - Fedora/RHEL: `sudo dnf install rpm-build`
+  - Arch Linux: `sudo pacman -S base-devel zstd`
 
-If you're looking for something to work on, check out the [help wanted](https://github.com/desktop/desktop/issues?q=is%3Aissue+is%3Aopen+label%3A%22help%20wanted%22) label.
+### Build Steps
 
-## Building Desktop
+```bash
+# Clone the repository
+git clone https://github.com/venti1112/github_desktop_for_linux.git
+cd github_desktop_for_linux
 
-To setup your development environment for building Desktop, check out: [`setup.md`](./docs/contributing/setup.md).
+# Install dependencies
+yarn install
 
-## More Resources
+# Build the production app
+yarn build:prod
 
-See [desktop.github.com](https://desktop.github.com) for more product-oriented
-information about GitHub Desktop.
+# Package for all available formats
+yarn package
+```
 
-See our [getting started documentation](https://docs.github.com/en/desktop/overview/getting-started-with-github-desktop) for more information on how to set up, authenticate, and configure GitHub Desktop.
+The built packages will be in the `dist/` directory.
+
+## What's Different from the Original
+
+This branch adds the following Linux-specific changes:
+
+- **Packaging scripts** for AppImage, deb, rpm, and Arch Linux packages
+- **Linux OAuth callback fix** for protocol handling in second-instance
+- **Auto-update disabled** on Linux (no official update server supports Linux)
+- **Desktop integration** with `.desktop` file, icons, and MIME type handlers
+- **CI/CD workflow** for automated builds on GitHub Actions
+- **Unofficial disclaimer**: This branch is a community-maintained unofficial version and is not affiliated with GitHub's official macOS/Windows releases. All Linux-specific changes are contributed by the community and have not been tested or endorsed by GitHub. Please be aware of this when using it.
+
+## Known Limitations
+
+- Auto-update is not available on Linux.
+- This is an unofficial community fork, which may lack the quality assurance, regular updates, and stability guarantees of the official release. Use at your own risk.
+
+## Contributing
+
+If you'd like to contribute to this Linux port, please see the original [CONTRIBUTING.md](./.github/CONTRIBUTING.md) for general guidelines.
 
 ## License
 
