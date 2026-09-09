@@ -190,7 +190,26 @@ if (!handlingSquirrelEvent) {
       mainWindow.focus()
     }
 
-    handleCommandLineArguments(args)
+    // On Linux, the protocol URL is passed as a command line argument
+    // without the --protocol-launcher flag. Check for protocol URLs first.
+    const prefixes = Array.from(possibleProtocols, p => `${p}://`)
+    const protocolUrl = args.find(arg => {
+      if (prefixes.some(p => arg.startsWith(p))) {
+        try {
+          new URL(arg)
+          return true
+        } catch (e) {
+          log.error(`Unable to parse argument as URL: ${arg}`)
+        }
+      }
+      return false
+    })
+
+    if (protocolUrl) {
+      handleAppURL(protocolUrl)
+    } else {
+      handleCommandLineArguments(args)
+    }
   })
 
   if (isDuplicateInstance) {

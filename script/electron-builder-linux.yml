@@ -1,0 +1,19 @@
+artifactName: 'GitHubDesktop-${os}-${arch}-${version}.${ext}'
+
+linux:
+  category: 'GNOME;GTK;Development'
+  packageCategory: 'GNOME;GTK;Development'
+  icon: 'app/static/linux/logos'
+  mimeTypes:
+    - x-scheme-handler/x-github-client
+    - x-scheme-handler/x-github-desktop-auth
+    - x-scheme-handler/x-github-desktop-dev-auth
+  target:
+    - AppImage
+  maintainer: 'GitHub Desktop Team'
+  description: 'Simple collaboration from your desktop'
+  desktop:
+    Name: 'GitHub Desktop'
+    Comment: 'Git GUI'
+    Categories: 'GNOME;GTK;Development;RevisionControl;'
+    MimeType: 'x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;'

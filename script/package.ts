@@ -25,6 +25,10 @@ import { computeBundleHashSync } from '../app/src/lib/compute-bundle-hash'
 import { rename } from 'fs/promises'
 import { join } from 'path'
 import { assertNonNullable } from '../app/src/lib/fatal-error'
+import { packageElectronBuilder } from './package-electron-builder'
+import { packageDebian } from './package-debian'
+import { packageRedhat } from './package-redhat'
+import { packageArchLinux } from './package-archlinux'
 
 const distPath = getDistPath()
 const productName = getProductName()
@@ -40,6 +44,8 @@ if (process.platform === 'darwin') {
   packageOSX()
 } else if (process.platform === 'win32') {
   packageWindows()
+} else if (process.platform === 'linux') {
+  packageLinux()
 } else {
   console.error(`I don't know how to package for ${process.platform} :(`)
   process.exit(1)
@@ -58,6 +64,60 @@ writeFileSync(
     bundleHash: computeBundleHashSync(path.join(__dirname, '..', 'out')),
   })
 )
+
+async function packageLinux() {
+  const helperPath = path.join(getDistPath(), 'chrome-sandbox')
+  const exists = await import('fs-extra').then(fs => fs.pathExists(helperPath))
+
+  if (exists) {
+    console.log('Updating file mode for chrome-sandbox…')
+    await import('fs-extra').then(fs => fs.chmod(helperPath, 0o4755))
+  }
+
+  const installers: string[] = []
+
+  try {
+    console.log('Building AppImage...')
+    const files = await packageElectronBuilder()
+    installers.push(...files)
+  } catch (err) {
+    console.warn('Warning: AppImage build failed:', err)
+  }
+
+  try {
+    console.log('Building deb package...')
+    const debianPackage = await packageDebian()
+    installers.push(debianPackage)
+  } catch (err) {
+    console.warn('Warning: deb package build skipped (dpkg-deb not available):', err)
+  }
+
+  try {
+    console.log('Building rpm package...')
+    const redhatPackage = await packageRedhat()
+    installers.push(redhatPackage)
+  } catch (err) {
+    console.warn('Warning: rpm package build skipped (rpmbuild not available):', err)
+  }
+
+  try {
+    console.log('Building Arch Linux package...')
+    const archlinuxPackage = await packageArchLinux()
+    installers.push(archlinuxPackage)
+  } catch (err) {
+    console.warn('Warning: Arch Linux package build skipped (makepkg not available):', err)
+  }
+
+  if (installers.length > 0) {
+    console.log(`\nInstallers created:`)
+    for (const installer of installers) {
+      console.log(` - ${installer}`)
+    }
+  } else {
+    console.error('No installers were created')
+    process.exit(1)
+  }
+}
 
 function packageOSX() {
   const dest = getOSXZipPath()

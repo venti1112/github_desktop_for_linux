@@ -1,0 +1,248 @@
+name: Build Linux Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '是否自动发布 Release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  NODE_VERSION: 24.19.0
+
+jobs:
+  build-appimage:
+    name: Build AppImage ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 60
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build production app
+        run: yarn build:prod
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Package AppImage
+        run: yarn package
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-AppImage-${{ matrix.arch }}
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  build-debian:
+    name: Build Debian ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 60
+    
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build production app
+        run: yarn build:prod
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Package Debian
+        run: yarn package
+
+      - name: Upload Debian artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-Debian-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: warn
+
+  build-fedora:
+    name: Build Fedora ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 60
+    
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build production app
+        run: yarn build:prod
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Package Fedora
+        run: yarn package
+
+      - name: Upload Fedora artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-Fedora-${{ matrix.arch }}
+          path: dist/*.rpm
+          if-no-files-found: warn
+
+  build-archlinux:
+    name: Build Arch Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 60
+    
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build production app
+        run: yarn build:prod
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Package Arch Linux
+        run: yarn package
+
+      - name: Upload Arch Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-ArchLinux-${{ matrix.arch }}
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: warn
+
+  release:
+    name: Create Release
+    needs: [build-appimage, build-debian, build-fedora, build-archlinux]
+    runs-on: ubuntu-latest
+    if: inputs.create_release == true
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: linux-build-${{ github.run_number }}
+          name: Linux Build ${{ github.run_number }}
+          body: |
+            ## Linux Build ${{ github.run_number }}
+            
+            ### Available Packages
+            
+            | Format | x86_64 | arm64 |
+            |--------|--------|-------|
+            | AppImage | ✅ | ✅ |
+            | Debian (.deb) | ✅ | ✅ |
+            | Fedora (.rpm) | ✅ | ✅ |
+            | Arch Linux (.pkg.tar.zst) | ✅ | ✅ |
+          files: |
+            artifacts/*.AppImage
+            artifacts/*.deb
+            artifacts/*.rpm
+            artifacts/*.pkg.tar.zst
+          draft: false
+          prerelease: true
