@@ -46,6 +46,7 @@ type DebianOptions = {
 const options: DebianOptions = {
   src: getDistPath(),
   dest: distRoot,
+  name: 'github-desktop',
   arch: getArchitecture() as 'amd64' | 'i386' | 'arm64' | 'armhf',
   description: 'Simple collaboration from your desktop',
   productDescription:
@@ -83,7 +84,7 @@ export async function packageDebian(): Promise<string> {
     return Promise.reject('Windows is not supported')
   }
 
-  const installer = require('electron-installer-debian')
+  const { default: installer } = await import('electron-installer-debian')
   await installer(options)
 
   const installersPath = `${distRoot}/github-desktop*.deb`

@@ -12,8 +12,3 @@ linux:
     - AppImage
   maintainer: 'GitHub Desktop Team'
   description: 'Simple collaboration from your desktop'
-  desktop:
-    Name: 'GitHub Desktop'
-    Comment: 'Git GUI'
-    Categories: 'GNOME;GTK;Development;RevisionControl;'
-    MimeType: 'x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;'

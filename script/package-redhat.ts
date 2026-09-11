@@ -43,6 +43,7 @@ type RedhatOptions = {
 const options: RedhatOptions = {
   src: getDistPath(),
   dest: distRoot,
+  name: 'github-desktop',
   arch: getArchitecture(),
   description: 'Simple collaboration from your desktop',
   productDescription:
@@ -78,7 +79,7 @@ export async function packageRedhat(): Promise<string> {
     return Promise.reject('Windows is not supported')
   }
 
-  const installer = require('electron-installer-redhat')
+  const { default: installer } = await import('electron-installer-redhat')
   await installer(options)
 
   const installersPath = `${distRoot}/github-desktop*.rpm`
