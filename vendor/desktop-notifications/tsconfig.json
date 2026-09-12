@@ -3,7 +3,7 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "target": "ES2022",
-    "types": [],
+    "types": ["node"],
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "importHelpers": true,
