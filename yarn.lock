@@ -1036,19 +1036,7 @@
     "@types/prop-types" "*"
     "@types/react" "*"
 
-"@types/react@*":
-  version "19.2.18"
-  resolved "https://registry.yarnpkg.com/@types/react/-/react-19.2.18.tgz#eb0b6a1fb635d1a9692d5f84a3495bd8ad153707"
-  integrity sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==
-  dependencies:
-    csstype "^3.2.2"
-
-"@types/react@^15":
-  version "15.7.37"
-  resolved "https://registry.yarnpkg.com/@types/react/-/react-15.7.37.tgz#94eb0cfebadb5eaa7fa882c9956ab2b6e2e3bcd2"
-  integrity sha512-y9gCkVBkqZ8n6xdprjlQ4LhM9RSmbQBMy/RsLSOgZBeQNfO3FrO9c5/IYojOPn+JpSbJdL/3pCU5ghAtE2a36w==
-
-"@types/react@^16.14.62":
+"@types/react@*", "@types/react@^15", "@types/react@^16.14.62":
   version "16.14.70"
   resolved "https://registry.yarnpkg.com/@types/react/-/react-16.14.70.tgz#c97b717a6263e18e546c54b3b870482d867c6a93"
   integrity sha512-DM5Q7rSx9G6QYcVvMgxvEurL5P06OxcDNUXrLxlpBzG4ccUewcBCmsztYbxJBobzO8RIwwmjoaD5OsKqdHDuYQ==
