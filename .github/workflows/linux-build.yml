@@ -56,6 +56,9 @@ jobs:
           npm_config_arch: ${{ matrix.arch }}
           TARGET_ARCH: ${{ matrix.arch }}
 
+      - name: Install system packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
       - name: Package all formats
         run: yarn package
         env:
