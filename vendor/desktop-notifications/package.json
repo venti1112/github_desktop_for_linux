@@ -5,7 +5,7 @@
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
-    "install": "node-gyp rebuild && tsc",
+    "install": "node-gyp rebuild",
     "build": "tsc",
     "pretest": "yarn build",
     "prettify": "yarn prettier --write \"./**/*.{ts,tsx,js,json,jsx,scss,html,yaml,yml}\"",
