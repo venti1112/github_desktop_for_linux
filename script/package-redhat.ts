@@ -30,6 +30,7 @@ type RedhatOptions = {
   productDescription?: string
   categories?: Array<string>
   icon?: any
+  specTemplate?: string
   scripts?: {
     pre?: string
     post?: string
@@ -46,6 +47,7 @@ const options: RedhatOptions = {
   dest: distRoot,
   name: 'github-desktop',
   arch: getArchitecture(),
+  specTemplate: join(__dirname, 'resources/rpm/github-desktop.spec'),
   description: 'Simple collaboration from your desktop',
   productDescription:
     'This is the unofficial port of GitHub Desktop for Linux distributions',
