@@ -14,6 +14,7 @@
     "sourceMap": false,
     "noEmit": true,
     "strict": true,
+    "skipLibCheck": true,
     "types": ["node"],
     "typeRoots": ["./types", "../node_modules/@types"]
   },

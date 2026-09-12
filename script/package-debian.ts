@@ -24,6 +24,7 @@ const distRoot = getDistRoot()
 type DebianOptions = {
   src: string
   dest: string
+  name?: string
   arch: 'amd64' | 'i386' | 'arm64' | 'armhf'
   description?: string
   productDescription?: string

@@ -24,6 +24,7 @@ const distRoot = getDistRoot()
 type RedhatOptions = {
   src: string
   dest: string
+  name?: string
   arch: string
   description?: string
   productDescription?: string
