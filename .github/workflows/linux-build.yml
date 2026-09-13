@@ -138,11 +138,13 @@ jobs:
             BODY="${{ github.event.head_commit.message }}"
           fi
 
+          BODY=$(printf '%b' "$BODY")
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           {
             echo "body<<RELEASE_BODY_EOF"
-            echo "$BODY"
+            printf '%s' "$BODY"
             echo "RELEASE_BODY_EOF"
           } >> "$GITHUB_OUTPUT"
 
