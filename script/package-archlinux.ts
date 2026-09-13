@@ -33,7 +33,6 @@ builddate = ${Math.floor(Date.now() / 1000)}
 packager = GitHub Desktop Team <github@github.com>
 size = ${installedSize}
 license = MIT
-depend = electron
 depend = libcurl-compat
 depend = libsecret
 depend = gnome-keyring
