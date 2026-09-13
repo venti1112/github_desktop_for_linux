@@ -1,0 +1,157 @@
+name: Build Linux Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '创建 Release'
+        required: false
+        default: false
+        type: boolean
+      tag_name:
+        description: 'Release tag (默认: linux-build-{run_number})'
+        required: false
+        type: string
+      release_name:
+        description: 'Release 标题 (默认: Linux Build {run_number})'
+        required: false
+        type: string
+      release_body:
+        description: 'Release 描述 (默认: 最后一次提交信息)'
+        required: false
+        type: string
+      prerelease:
+        description: '标记为预发行版'
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    name: Build all packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Build production app
+        run: yarn build:prod
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Install system packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y zstd libarchive-tools
+
+      - name: Package all formats
+        run: yarn package
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-rpm-${{ matrix.arch }}
+          path: dist/*.rpm
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Arch Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-arch-${{ matrix.arch }}
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-AppImage-${{ matrix.arch }}
+          path: dist/*.AppImage
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-tarball-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-26.04
+    if: inputs.create_release == true
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: GitHubDesktop-Linux-*
+          merge-multiple: true
+
+      - name: Set release info
+        id: release_info
+        run: |
+          TAG="${{ github.event.inputs.tag_name }}"
+          NAME="${{ github.event.inputs.release_name }}"
+          BODY="${{ github.event.inputs.release_body }}"
+
+          if [ -z "$TAG" ]; then
+            TAG="linux-build-${{ github.run_number }}"
+          fi
+          if [ -z "$NAME" ]; then
+            NAME="Linux Build ${{ github.run_number }}"
+          fi
+          if [ -z "$BODY" ]; then
+            BODY="${{ github.event.head_commit.message }}"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<RELEASE_BODY_EOF"
+            echo "$BODY"
+            echo "RELEASE_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
+          name: ${{ steps.release_info.outputs.name }}
+          body: ${{ steps.release_info.outputs.body }}
+          files: artifacts/*
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}

@@ -442,6 +442,11 @@ export class AppWindow {
   }
 
   public async checkForUpdates(url: string) {
+    // Linux doesn't have an official build, so turn off automatic updates
+    if (process.platform === 'linux') {
+      return undefined
+    }
+
     try {
       autoUpdater.setFeedURL({ url: await trySetUpdaterGuid(url) })
       autoUpdater.checkForUpdates()

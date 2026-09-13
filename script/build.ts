@@ -151,6 +151,14 @@ function packageApp() {
       return targetArch
     }
 
+    // Support Linux architecture names
+    if (targetArch === 'aarch64') {
+      return 'arm64'
+    }
+    if (targetArch === 'x86_64' || targetArch === 'amd64') {
+      return 'x64'
+    }
+
     throw new Error(
       `Building Desktop for architecture '${targetArch}' is not supported`
     )
