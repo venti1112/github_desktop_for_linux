@@ -415,7 +415,7 @@ ipcRenderer.on('cli-action', (_, action) =>
     delete defaults?.[k]
     delete types?.[k]
   })
-})(Grid.defaultProps, Grid.propTypes)
+})(Grid.defaultProps, (Grid as any).propTypes)
 
 ReactDOM.render(
   <App
