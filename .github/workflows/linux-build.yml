@@ -57,7 +57,7 @@ jobs:
           TARGET_ARCH: ${{ matrix.arch }}
 
       - name: Install system packaging dependencies
-        run: sudo apt-get update && sudo apt-get install -y zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd libarchive-tools
 
       - name: Package all formats
         run: yarn package
