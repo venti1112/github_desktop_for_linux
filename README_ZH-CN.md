@@ -97,6 +97,7 @@ yarn package
 
 - **打包脚本**：支持 .deb、.rpm、.pkg.tar.zst、.AppImage、.tar.gz 格式
 - **OAuth 回调修复**：修复 Linux 上的协议处理（second-instance）
+- **桌面通知支持**：Linux 上现已支持桌面通知
 - **禁用自动更新**：Linux 上没有官方更新服务器支持
 - **桌面集成**：包含 `.desktop` 文件、图标和 MIME 类型处理
 - **CI/CD 工作流**：GitHub Actions 自动化构建
@@ -105,7 +106,6 @@ yarn package
 ## 已知限制
 
 - Linux 上不支持自动更新。
-- 暂不支持桌面消息推送功能（计划中）。
 - 本分支为非官方社区版本，可能缺乏官方版本的质量保证、持续更新和稳定性保障，请自行评估使用风险。
 
 ## 贡献

@@ -57,6 +57,7 @@ const options: DebianOptions = {
   homepage: 'https://github.com/desktop/desktop',
   depends: [
     'libcurl3 | libcurl4',
+    'libnotify4',
     'libsecret-1-0',
     'gnome-keyring',
   ],

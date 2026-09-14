@@ -412,7 +412,7 @@ ${diffBlock}`
 /** Ordered reasoning effort levels from lowest to highest. */
 export const ReasoningEffortOrder = ['low', 'medium', 'high', 'xhigh'] as const
 
-export type ReasoningEffort = typeof ReasoningEffortOrder[number]
+export type ReasoningEffort = (typeof ReasoningEffortOrder)[number]
 
 /** Formats a reasoning effort for display, e.g. 'xhigh' → 'Extra high'. */
 export function formatReasoningEffort(effort: ReasoningEffort): string {

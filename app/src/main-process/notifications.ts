@@ -3,16 +3,23 @@ import {
   onNotificationEvent,
   terminateNotifications,
 } from 'desktop-notifications'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, Notification } from 'electron'
+import * as path from 'path'
 import { findToastActivatorClsid } from '../lib/find-toast-activator-clsid'
 import { DesktopAliveEvent } from '../lib/stores/alive-store'
 import * as ipcWebContents from './ipc-webcontents'
 
 let windowsToastActivatorClsid: string | undefined = undefined
+const linuxNotifications = new Map<string, Notification>()
+const MaxLinuxNotifications = 200
+
+let notificationEventCallback:
+  | ((event: 'click', id: string, userInfo: DesktopAliveEvent) => void)
+  | null = null
 
 export function initializeDesktopNotifications() {
   if (__LINUX__) {
-    // notifications not currently supported
+    // Linux notifications use Electron's libnotify-backed Notification API.
     return
   }
 
@@ -42,11 +49,15 @@ export function initializeDesktopNotifications() {
 }
 
 export function terminateDesktopNotifications() {
+  for (const notification of linuxNotifications.values()) {
+    notification.close()
+  }
+  linuxNotifications.clear()
   terminateNotifications()
 }
 
 export function installNotificationCallback(window: BrowserWindow) {
-  onNotificationEvent<DesktopAliveEvent>((event, id, userInfo) => {
+  notificationEventCallback = (event, id, userInfo) => {
     ipcWebContents.send(
       window.webContents,
       'notification-event',
@@ -54,5 +65,58 @@ export function installNotificationCallback(window: BrowserWindow) {
       id,
       userInfo
     )
+  }
+
+  onNotificationEvent<DesktopAliveEvent>(notificationEventCallback)
+}
+
+/**
+ * Shows a Linux desktop notification and returns an ID that the renderer can
+ * associate with its in-memory click callback. Electron uses libnotify on
+ * Linux, which supports desktop environments implementing the freedesktop
+ * Desktop Notifications specification.
+ */
+export function showLinuxNotification(
+  title: string,
+  body: string,
+  userInfo?: DesktopAliveEvent
+): string | null {
+  if (!Notification.isSupported()) {
+    return null
+  }
+
+  const id = crypto.randomUUID()
+  const notification = new Notification({
+    title,
+    body,
+    icon: path.join(__dirname, 'static', 'icon-logo.png'),
+    urgency: 'normal',
   })
+
+  // Notification instances must stay referenced for click events to arrive.
+  if (linuxNotifications.size >= MaxLinuxNotifications) {
+    const oldestID = linuxNotifications.keys().next().value
+    if (oldestID !== undefined) {
+      linuxNotifications.get(oldestID)?.close()
+      linuxNotifications.delete(oldestID)
+    }
+  }
+  linuxNotifications.set(id, notification)
+
+  notification.once('click', () => {
+    linuxNotifications.delete(id)
+    // The renderer first resolves its in-memory callback by ID. The optional
+    // userInfo is only needed as a fallback after an app session change.
+    notificationEventCallback?.('click', id, userInfo as DesktopAliveEvent)
+  })
+  notification.once('close', () => linuxNotifications.delete(id))
+
+  try {
+    notification.show()
+    return id
+  } catch (error) {
+    linuxNotifications.delete(id)
+    log.error('Unable to show Linux desktop notification', error)
+    return null
+  }
 }

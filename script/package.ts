@@ -90,7 +90,10 @@ async function packageLinux() {
     const debianPackage = await packageDebian()
     installers.push(debianPackage)
   } catch (err) {
-    console.warn('Warning: deb package build skipped (dpkg-deb not available):', err)
+    console.warn(
+      'Warning: deb package build skipped (dpkg-deb not available):',
+      err
+    )
   }
 
   try {
@@ -98,7 +101,10 @@ async function packageLinux() {
     const redhatPackage = await packageRedhat()
     installers.push(redhatPackage)
   } catch (err) {
-    console.warn('Warning: rpm package build skipped (rpmbuild not available):', err)
+    console.warn(
+      'Warning: rpm package build skipped (rpmbuild not available):',
+      err
+    )
   }
 
   try {
@@ -106,7 +112,10 @@ async function packageLinux() {
     const archlinuxPackage = await packageArchLinux()
     installers.push(archlinuxPackage)
   } catch (err) {
-    console.warn('Warning: Arch Linux package build skipped (makepkg not available):', err)
+    console.warn(
+      'Warning: Arch Linux package build skipped (makepkg not available):',
+      err
+    )
   }
 
   try {

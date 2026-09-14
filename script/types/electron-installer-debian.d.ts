@@ -1,5 +1,5 @@
 declare module 'electron-installer-debian' {
-  interface DebianOptions {
+  interface IDebianOptions {
     src: string
     dest: string
     arch?: string
@@ -34,6 +34,8 @@ declare module 'electron-installer-debian' {
     compression?: string
   }
 
-  function installer(options: DebianOptions): Promise<void>
+  function installer(options: IDebianOptions): Promise<void>
+  // The package exposes a default export at runtime.
+  // eslint-disable-next-line no-restricted-syntax
   export default installer
 }

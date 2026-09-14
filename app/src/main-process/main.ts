@@ -47,9 +47,12 @@ import { getMainGUID, saveGUIDFile } from '../lib/get-main-guid'
 import {
   getNotificationsPermission,
   requestNotificationsPermission,
-  showNotification,
+  showNotification as showNativeNotification,
 } from 'desktop-notifications'
-import { initializeDesktopNotifications } from './notifications'
+import {
+  initializeDesktopNotifications,
+  showLinuxNotification,
+} from './notifications'
 import parseCommandLineArgs from 'minimist'
 import { CLIAction } from '../lib/cli-action'
 
@@ -737,7 +740,9 @@ app.on('ready', () => {
   ipcMain.handle('save-guid', (_, guid) => saveGUIDFile(guid))
 
   ipcMain.handle('show-notification', async (_, title, body, userInfo) =>
-    showNotification(title, body, userInfo)
+    __LINUX__
+      ? showLinuxNotification(title, body, userInfo)
+      : showNativeNotification(title, body, userInfo)
   )
 
   ipcMain.handle('get-notifications-permission', async () =>

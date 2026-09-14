@@ -16,9 +16,9 @@ interface IShowNotificationOptions {
  * user clicks on the notification.
  */
 export async function showNotification(options: IShowNotificationOptions) {
-  // `supportNotifications` checks if `desktop-notifications` is supported by
-  // the current platform. Otherwise, we'll rely on the HTML5 notification API.
-  if (!supportsNotifications()) {
+  // desktop-notifications implements macOS and Windows only. Linux is handled
+  // by Electron's main-process Notification API, so it must use IPC as well.
+  if (!__LINUX__ && !supportsNotifications()) {
     const notification = new Notification(options.title, {
       body: options.body,
     })

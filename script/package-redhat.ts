@@ -54,6 +54,7 @@ const options: RedhatOptions = {
   categories: ['GNOME', 'GTK', 'Development'],
   requires: [
     '(libcurl or libcurl4)',
+    'libnotify',
     'libsecret',
     'gnome-keyring',
   ],

@@ -1,5 +1,5 @@
 declare module 'electron-installer-redhat' {
-  interface RedhatOptions {
+  interface IRedhatOptions {
     src: string
     dest: string
     arch?: string
@@ -30,6 +30,8 @@ declare module 'electron-installer-redhat' {
     specTemplate?: string
   }
 
-  function installer(options: RedhatOptions): Promise<void>
+  function installer(options: IRedhatOptions): Promise<void>
+  // The package exposes a default export at runtime.
+  // eslint-disable-next-line no-restricted-syntax
   export default installer
 }

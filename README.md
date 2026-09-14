@@ -99,6 +99,7 @@ This branch adds the following Linux-specific changes:
 
 - **Packaging scripts** for .deb, .rpm, .pkg.tar.zst, .AppImage, .tar.gz
 - **Linux OAuth callback fix** for protocol handling in second-instance
+- **Desktop notifications** are now supported on Linux
 - **Auto-update disabled** on Linux (no official update server supports Linux)
 - **Desktop integration** with `.desktop` file, icons, and MIME type handlers
 - **CI/CD workflow** for automated builds on GitHub Actions
@@ -107,7 +108,6 @@ This branch adds the following Linux-specific changes:
 ## Known Limitations
 
 - Auto-update is not available on Linux.
-- Desktop notifications are not supported yet (coming soon).
 - This is an unofficial community fork, which may lack the quality assurance, regular updates, and stability guarantees of the official release. Use at your own risk.
 
 ## Contributing

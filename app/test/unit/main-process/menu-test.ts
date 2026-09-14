@@ -171,7 +171,7 @@ describe('main-process menu', () => {
       'askForConfirmationOnForcePush',
     ] as const
 
-    type VariantKey = typeof variantKeys[number]
+    type VariantKey = (typeof variantKeys)[number]
 
     const baseParams: MenuLabelsEvent = {
       selectedShell: null,

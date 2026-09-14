@@ -1,3 +1,5 @@
+/* eslint-disable no-sync */
+
 import * as path from 'path'
 import * as cp from 'child_process'
 import { getVersion } from '../app/package-info'
@@ -39,11 +41,16 @@ export async function packageTarball(): Promise<string> {
     stdio: 'inherit',
   })
   if (cpResult.status !== 0) {
-    return Promise.reject(new Error(`Failed to copy application files to ${pkgDir}`))
+    return Promise.reject(
+      new Error(`Failed to copy application files to ${pkgDir}`)
+    )
   }
 
   // Copy LICENSE file
-  copyFileSync(path.join(__dirname, '..', 'LICENSE'), path.join(pkgDir, 'LICENSE'))
+  copyFileSync(
+    path.join(__dirname, '..', 'LICENSE'),
+    path.join(pkgDir, 'LICENSE')
+  )
 
   // Create the tar.gz archive
   const tarFileName = `GitHubDesktop-linux-${arch}-${version}.tar.gz`
@@ -54,7 +61,13 @@ export async function packageTarball(): Promise<string> {
   const tarResult = cp.spawnSync('sh', ['-c', tarCmd], { stdio: 'inherit' })
 
   if (tarResult.error || tarResult.status !== 0) {
-    return Promise.reject(new Error(`Failed to create tar.gz archive: ${tarResult.error?.message || `exit code ${tarResult.status}`}`))
+    return Promise.reject(
+      new Error(
+        `Failed to create tar.gz archive: ${
+          tarResult.error?.message || `exit code ${tarResult.status}`
+        }`
+      )
+    )
   }
 
   return Promise.resolve(tarPath)

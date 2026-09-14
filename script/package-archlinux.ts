@@ -1,3 +1,5 @@
+/* eslint-disable no-sync */
+
 import * as path from 'path'
 import * as cp from 'child_process'
 import { rename } from 'fs-extra'
@@ -34,6 +36,7 @@ packager = GitHub Desktop Team <github@github.com>
 size = ${installedSize}
 license = MIT
 depend = libcurl-compat
+depend = libnotify
 depend = libsecret
 depend = gnome-keyring
 `
@@ -57,7 +60,9 @@ buildtool = github-desktop-packager
 
 function getInstalledSize(dirPath: string): number {
   let totalSize = 0
-  const result = cp.spawnSync('find', [dirPath, '-type', 'f'], { encoding: 'utf-8' })
+  const result = cp.spawnSync('find', [dirPath, '-type', 'f'], {
+    encoding: 'utf-8',
+  })
   if (result.stdout) {
     const files = result.stdout.trim().split('\n').filter(Boolean)
     for (const file of files) {
@@ -103,25 +108,54 @@ export async function packageArchLinux(): Promise<string> {
   }
 
   // Copy application files
-  const cpResult = cp.spawnSync('cp', ['-r', `${getDistPath()}/.`, `${pkgDir}/opt/github-desktop/`], {
-    stdio: 'inherit',
-  })
+  const cpResult = cp.spawnSync(
+    'cp',
+    ['-r', `${getDistPath()}/.`, `${pkgDir}/opt/github-desktop/`],
+    {
+      stdio: 'inherit',
+    }
+  )
   if (cpResult.status !== 0) {
-    return Promise.reject(new Error(`Failed to copy application files to ${pkgDir}/opt/github-desktop/`))
+    return Promise.reject(
+      new Error(
+        `Failed to copy application files to ${pkgDir}/opt/github-desktop/`
+      )
+    )
   }
 
   // Copy icons
   const iconSizes = ['32x32', '64x64', '128x128', '256x256', '512x512']
   for (const size of iconSizes) {
-    const src = path.join(__dirname, '..', 'app', 'static', 'linux', 'logos', `${size}.png`)
-    const dest = path.join(pkgDir, 'usr', 'share', 'icons', 'hicolor', size, 'apps', 'github-desktop.png')
+    const src = path.join(
+      __dirname,
+      '..',
+      'app',
+      'static',
+      'linux',
+      'logos',
+      `${size}.png`
+    )
+    const dest = path.join(
+      pkgDir,
+      'usr',
+      'share',
+      'icons',
+      'hicolor',
+      size,
+      'apps',
+      'github-desktop.png'
+    )
     cp.spawnSync('cp', [src, dest], { stdio: 'inherit' })
   }
 
   // Create symlink for binary
-  const lnResult = cp.spawnSync('ln', ['-sf', '/opt/github-desktop/desktop', `${pkgDir}/usr/bin/github-desktop`], {
-    stdio: 'inherit',
-  })
+  const lnResult = cp.spawnSync(
+    'ln',
+    ['-sf', '/opt/github-desktop/desktop', `${pkgDir}/usr/bin/github-desktop`],
+    {
+      stdio: 'inherit',
+    }
+  )
   if (lnResult.status !== 0) {
     return Promise.reject(new Error('Failed to create binary symlink'))
   }
@@ -136,13 +170,19 @@ Type=Application
 Categories=GNOME;GTK;Development;RevisionControl;
 MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;
 `
-  writeFileSync(`${pkgDir}/usr/share/applications/github-desktop.desktop`, desktopContent)
+  writeFileSync(
+    `${pkgDir}/usr/share/applications/github-desktop.desktop`,
+    desktopContent
+  )
 
   // Calculate installed size
   const installedSize = getInstalledSize(pkgDir)
 
   // Create .PKGINFO and .BUILDINFO in pkgDir (same as makepkg)
-  writeFileSync(path.join(pkgDir, '.PKGINFO'), generatePKGINFO(arch, installedSize))
+  writeFileSync(
+    path.join(pkgDir, '.PKGINFO'),
+    generatePKGINFO(arch, installedSize)
+  )
   writeFileSync(path.join(pkgDir, '.BUILDINFO'), generateBUILDINFO(arch))
 
   // Generate .MTREE using bsdtar (same approach as makepkg)
@@ -150,7 +190,11 @@ MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth
   const mtreeCmd = `cd '${pkgDir}' && find . -mindepth 1 -printf '%P\\0' | LANG=C bsdtar -cnf - --format=mtree --options='!all,use-set,type,uid,gid,mode,time,size,sha256,link' --null --files-from - --exclude .MTREE | gzip -c -f -n > .MTREE`
   const mtreeResult = cp.spawnSync('sh', ['-c', mtreeCmd], { stdio: 'inherit' })
   if (mtreeResult.status !== 0) {
-    return Promise.reject(new Error('Failed to generate .MTREE file (is bsdtar/libarchive-tools installed?)'))
+    return Promise.reject(
+      new Error(
+        'Failed to generate .MTREE file (is bsdtar/libarchive-tools installed?)'
+      )
+    )
   }
 
   // Create the tar archive using the same approach as makepkg
@@ -161,7 +205,13 @@ MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth
   const tarResult = cp.spawnSync('sh', ['-c', tarCmd], { stdio: 'inherit' })
 
   if (tarResult.error || tarResult.status !== 0) {
-    return Promise.reject(new Error(`Failed to create package archive: ${tarResult.error?.message || `exit code ${tarResult.status}`}`))
+    return Promise.reject(
+      new Error(
+        `Failed to create package archive: ${
+          tarResult.error?.message || `exit code ${tarResult.status}`
+        }`
+      )
+    )
   }
 
   // Rename to our naming convention

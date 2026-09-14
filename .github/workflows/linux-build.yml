@@ -57,7 +57,8 @@ jobs:
           TARGET_ARCH: ${{ matrix.arch }}
 
       - name: Install system packaging dependencies
-        run: sudo apt-get update && sudo apt-get install -y zstd libarchive-tools
+        run:
+          sudo apt-get update && sudo apt-get install -y zstd libarchive-tools
 
       - name: Package all formats
         run: yarn package
@@ -112,7 +113,7 @@ jobs:
     if: inputs.create_release == true
     permissions:
       contents: write
-    
+
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
