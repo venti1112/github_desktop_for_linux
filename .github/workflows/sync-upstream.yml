@@ -282,7 +282,9 @@ jobs:
           # Trigger the linux-build workflow with upstream release info
           # Tag and name are synced with upstream
           # create_release 参数控制是否创建 release
+          # --repo 参数明确指定仓库，避免 gh CLI 误用上游仓库
           gh workflow run linux-build.yml \
+            --repo ${{ github.repository }} \
             -f "create_release=${CREATE_RELEASE}" \
             -f "tag_name=${UPSTREAM_TAG}" \
             -f "release_name=${UPSTREAM_NAME}" \
