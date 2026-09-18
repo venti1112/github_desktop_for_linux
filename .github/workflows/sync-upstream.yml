@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      create_release:
+        description: '创建 GitHub Release（关闭则仅同步代码和构建）'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -267,13 +272,15 @@ jobs:
           UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
           UPSTREAM_BODY: ${{ needs.check-upstream.outputs.upstream_body }}
           UPSTREAM_PRERELEASE: ${{ needs.check-upstream.outputs.upstream_prerelease }}
+          CREATE_RELEASE: ${{ inputs.create_release }}
         run: |
           echo "🔨 Triggering Linux build for v${UPSTREAM_VERSION}..."
 
           # Trigger the linux-build workflow with upstream release info
           # Tag and name are synced with upstream
+          # create_release 参数控制是否创建 release
           gh workflow run linux-build.yml \
-            -f create_release=true \
+            -f "create_release=${CREATE_RELEASE}" \
             -f "tag_name=${UPSTREAM_TAG}" \
             -f "release_name=${UPSTREAM_NAME}" \
             -f "release_body=${UPSTREAM_BODY}" \
@@ -283,6 +290,7 @@ jobs:
           echo "📦 Tag: ${UPSTREAM_TAG}"
           echo "📝 Name: ${UPSTREAM_NAME}"
           echo "🏷️ Pre-release: ${UPSTREAM_PRERELEASE}"
+          echo "📤 Create Release: ${CREATE_RELEASE}"
 
   post-release:
     name: Post Release
@@ -296,8 +304,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
+          CREATE_RELEASE: ${{ inputs.create_release }}
         run: |
           echo "⏳ Waiting for linux-build workflow to complete..."
+          echo "📤 Create Release: ${CREATE_RELEASE}"
           
           # Get the latest workflow run
           for i in $(seq 1 30); do
@@ -324,7 +334,7 @@ jobs:
           echo "build_success=false" >> "$GITHUB_OUTPUT"
 
       - name: Add checksums to release
-        if: steps.wait.outputs.build_success == 'true'
+        if: steps.wait.outputs.build_success == 'true' && inputs.create_release == true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
@@ -367,6 +377,7 @@ jobs:
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
           UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
           BUILD_SUCCESS: ${{ steps.wait.outputs.build_success }}
+          CREATE_RELEASE: ${{ inputs.create_release }}
         run: |
           echo "## 🚀 Upstream Sync Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -377,7 +388,10 @@ jobs:
           echo "| Release Name | $UPSTREAM_NAME |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Sync & Merge | ✅ Success |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Linux Build | $([ "$BUILD_SUCCESS" = "true" ] && echo "✅ Success" || echo "❌ Failed") |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Create Release | $([ "$CREATE_RELEASE" = "true" ] && echo "✅ Yes" || echo "⏭️ Skipped") |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$BUILD_SUCCESS" = "true" ]; then
+          if [ "$BUILD_SUCCESS" = "true" ] && [ "$CREATE_RELEASE" = "true" ]; then
             echo "**Release:** [\`$UPSTREAM_TAG\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/$UPSTREAM_TAG)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$BUILD_SUCCESS" = "true" ]; then
+            echo "✅ Build artifacts uploaded to workflow artifacts only" >> "$GITHUB_STEP_SUMMARY"
           fi
