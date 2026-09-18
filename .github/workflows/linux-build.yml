@@ -148,18 +148,18 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          {
-            echo "body<<RELEASE_BODY_EOF"
-            printf '%s' "$BODY"
-            echo "RELEASE_BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
+
+          # Write body to a file to avoid heredoc issues with special characters
+          RELEASE_BODY_FILE="${RUNNER_TEMP}/release_body.txt"
+          printf '%s' "$BODY" > "$RELEASE_BODY_FILE"
+          echo "body_file=$RELEASE_BODY_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_info.outputs.tag }}
           name: ${{ steps.release_info.outputs.name }}
-          body: ${{ steps.release_info.outputs.body }}
+          body_path: ${{ steps.release_info.outputs.body_file }}
           files: artifacts/*
           draft: false
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
