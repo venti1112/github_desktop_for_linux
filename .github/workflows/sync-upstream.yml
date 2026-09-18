@@ -159,8 +159,11 @@ jobs:
 
       - name: Add upstream remote
         run: |
-          git remote add upstream https://github.com/desktop/desktop.git || true
-          git fetch upstream --tags
+          # Remove existing upstream remote if it exists, then re-add
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/desktop/desktop.git
+          # Fetch all tags with force to avoid conflicts with existing local tags
+          git fetch upstream --tags --force
 
       - name: Sync upstream changes
         id: sync
