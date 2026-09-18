@@ -42,6 +42,7 @@ type DebianOptions = {
   mimeType?: Array<string>
   maintainer?: string
   depends?: Array<string>
+  recommends?: Array<string>
 }
 
 const options: DebianOptions = {

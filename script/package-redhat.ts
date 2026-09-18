@@ -40,6 +40,7 @@ type RedhatOptions = {
   homepage?: string
   mimeType?: Array<string>
   requires?: Array<string>
+  recommends?: Array<string>
 }
 
 const options: RedhatOptions = {

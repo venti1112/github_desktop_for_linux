@@ -332,8 +332,8 @@ jobs:
           for i in $(seq 1 30); do
             sleep 120  # Wait 2 minutes between checks
             
-            RUN_STATUS=$(gh run list --workflow=linux-build.yml --limit=1 --json status,conclusion -q '.[0].status')
-            RUN_CONCLUSION=$(gh run list --workflow=linux-build.yml --limit=1 --json status,conclusion -q '.[0].conclusion')
+            RUN_STATUS=$(gh run list --repo ${{ github.repository }} --workflow=linux-build.yml --limit=1 --json status,conclusion -q '.[0].status')
+            RUN_CONCLUSION=$(gh run list --repo ${{ github.repository }} --workflow=linux-build.yml --limit=1 --json status,conclusion -q '.[0].conclusion')
             
             echo "🔄 Check $i/30: Status=$RUN_STATUS, Conclusion=$RUN_CONCLUSION"
             
