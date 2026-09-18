@@ -136,7 +136,8 @@ jobs:
             NAME="Linux Build ${{ github.run_number }}"
           fi
           if [ -z "$BODY" ]; then
-            BODY="${{ github.event.head_commit.message }}"
+            BODY="GitHub Desktop Linux Build ${{ github.run_number }}"
+            BODY="${BODY}\n\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
 
           BODY=$(printf '%b' "$BODY")

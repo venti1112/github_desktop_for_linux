@@ -56,7 +56,10 @@ const options: RedhatOptions = {
     '(libcurl or libcurl4)',
     'libnotify',
     'libsecret',
+  ],
+  recommends: [
     'gnome-keyring',
+    'kwallet',
   ],
   icon: {
     '32x32': 'app/static/linux/logos/32x32.png',

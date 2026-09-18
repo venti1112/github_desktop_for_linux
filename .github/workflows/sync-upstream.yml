@@ -1,0 +1,383 @@
+name: 'Sync Upstream Releases'
+
+on:
+  schedule:
+    # 每天 UTC 06:00 检查上游 releases（北京时间 14:00）
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: '指定上游版本（留空则自动检测最新版本）'
+        required: false
+        type: string
+      dry_run:
+        description: '仅检测不执行（测试模式）'
+        required: false
+        default: false
+        type: boolean
+      force_rebuild:
+        description: '强制重新构建（忽略版本检查）'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  check-upstream:
+    name: Check Upstream Releases
+    runs-on: ubuntu-latest
+    outputs:
+      has_new_version: ${{ steps.check.outputs.has_new_version }}
+      upstream_version: ${{ steps.check.outputs.upstream_version }}
+      upstream_tag: ${{ steps.check.outputs.upstream_tag }}
+      upstream_name: ${{ steps.check.outputs.upstream_name }}
+      upstream_body: ${{ steps.check.outputs.upstream_body }}
+      upstream_prerelease: ${{ steps.check.outputs.upstream_prerelease }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read last synced version
+        id: last_synced
+        run: |
+          if [ -f ".last-synced-version" ]; then
+            LAST_SYNCED=$(cat .last-synced-version | tr -d '[:space:]')
+            echo "last_synced=$LAST_SYNCED" >> "$GITHUB_OUTPUT"
+            echo "📋 Last synced version: $LAST_SYNCED"
+          else
+            echo "last_synced=" >> "$GITHUB_OUTPUT"
+            echo "⚠️ No .last-synced-version file found"
+          fi
+
+      - name: Check for new upstream release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPECIFIED_VERSION: ${{ inputs.upstream_version }}
+          LAST_SYNCED: ${{ steps.last_synced.outputs.last_synced }}
+        run: |
+          echo "🔍 Checking upstream releases from desktop/desktop..."
+
+          # Get latest upstream release
+          if [ -n "$SPECIFIED_VERSION" ]; then
+            # Use specified version
+            UPSTREAM_TAG="release-${SPECIFIED_VERSION}"
+            UPSTREAM_RELEASE=$(gh api "repos/desktop/desktop/releases/tags/${UPSTREAM_TAG}" 2>/dev/null || echo "")
+            
+            if [ -z "$UPSTREAM_RELEASE" ]; then
+              echo "❌ Release not found for version: $SPECIFIED_VERSION"
+              exit 1
+            fi
+            
+            UPSTREAM_NAME=$(echo "$UPSTREAM_RELEASE" | jq -r '.name')
+            UPSTREAM_BODY=$(echo "$UPSTREAM_RELEASE" | jq -r '.body')
+            UPSTREAM_PRERELEASE=$(echo "$UPSTREAM_RELEASE" | jq -r '.prerelease')
+            UPSTREAM_VERSION="$SPECIFIED_VERSION"
+          else
+            # Get latest release (including pre-releases)
+            # Use 'releases' endpoint to get all releases, then select the first one
+            UPSTREAM_RELEASES=$(gh api repos/desktop/desktop/releases --paginate --jq '.[0:10]')
+            UPSTREAM_RELEASE=$(echo "$UPSTREAM_RELEASES" | jq '.[0]')
+            UPSTREAM_TAG=$(echo "$UPSTREAM_RELEASE" | jq -r '.tag_name')
+            UPSTREAM_NAME=$(echo "$UPSTREAM_RELEASE" | jq -r '.name')
+            UPSTREAM_BODY=$(echo "$UPSTREAM_RELEASE" | jq -r '.body')
+            UPSTREAM_PRERELEASE=$(echo "$UPSTREAM_RELEASE" | jq -r '.prerelease')
+            # Extract version from tag (remove 'release-' prefix)
+            UPSTREAM_VERSION="${UPSTREAM_TAG#release-}"
+          fi
+
+          echo "📦 Latest upstream version: $UPSTREAM_VERSION"
+          echo "🏷️ Tag: $UPSTREAM_TAG"
+          echo "📝 Name: $UPSTREAM_NAME"
+
+          # Compare with last synced version
+          HAS_NEW="false"
+          if [ "$UPSTREAM_VERSION" != "$LAST_SYNCED" ] || [ "${{ inputs.force_rebuild }}" = "true" ]; then
+            HAS_NEW="true"
+            echo "✨ New upstream version detected: $UPSTREAM_VERSION"
+          else
+            echo "✅ Already synced with upstream version: $UPSTREAM_VERSION"
+          fi
+
+          echo "has_new_version=$HAS_NEW" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+          echo "upstream_name=$UPSTREAM_NAME" >> "$GITHUB_OUTPUT"
+          echo "upstream_prerelease=$UPSTREAM_PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "📋 Pre-release: $UPSTREAM_PRERELEASE"
+
+          # Write body to output (handle multiline)
+          {
+            echo "upstream_body<<EOF"
+            echo "$UPSTREAM_BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Dry run summary
+        if: inputs.dry_run == true && steps.check.outputs.has_new_version == 'true'
+        run: |
+          echo "## 🔍 Dry Run Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Would sync to upstream version: **${{ steps.check.outputs.upstream_version }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Upstream Release Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Tag:** \`${{ steps.check.outputs.upstream_tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Name:** ${{ steps.check.outputs.upstream_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Pre-release:** ${{ steps.check.outputs.upstream_prerelease }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Upstream Release Notes" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.check.outputs.upstream_body }}" >> "$GITHUB_STEP_SUMMARY"
+
+  sync-and-build:
+    name: Sync & Build
+    needs: check-upstream
+    runs-on: ubuntu-latest
+    if: needs.check-upstream.outputs.has_new_version == 'true' && inputs.dry_run != true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/desktop/desktop.git || true
+          git fetch upstream --tags
+
+      - name: Sync upstream changes
+        id: sync
+        env:
+          UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
+          UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+        run: |
+          echo "🔄 Syncing upstream version: $UPSTREAM_VERSION"
+
+          # Create a temporary branch from the upstream tag
+          TEMP_BRANCH="temp-sync-${UPSTREAM_VERSION}"
+          git checkout -b "$TEMP_BRANCH" "upstream/${UPSTREAM_TAG}" 2>/dev/null || \
+            git checkout -b "$TEMP_BRANCH" "$UPSTREAM_TAG" 2>/dev/null || {
+              echo "❌ Failed to checkout upstream tag: $UPSTREAM_TAG"
+              exit 1
+            }
+
+          echo "✅ Checked out upstream tag: $UPSTREAM_TAG"
+
+          # Switch back to development and merge
+          git checkout development
+
+          # Attempt merge
+          if git merge "$TEMP_BRANCH" --no-edit -m "chore: sync upstream v${UPSTREAM_VERSION}"; then
+            echo "✅ Successfully merged upstream changes"
+            echo "merge_success=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "⚠️ Merge conflict detected"
+            echo "merge_success=false" >> "$GITHUB_OUTPUT"
+
+            # Abort the merge
+            git merge --abort
+
+            # Create an issue for manual resolution
+            ISSUE_TITLE="⚠️ Upstream Sync Conflict: v${UPSTREAM_VERSION}"
+            ISSUE_BODY="## Upstream Version: ${UPSTREAM_VERSION}
+          
+          **Tag:** \`${UPSTREAM_TAG}\`
+          **Detected at:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          
+          ### Description
+          
+          There are merge conflicts between the upstream repository and the local \`development\` branch when syncing version ${UPSTREAM_VERSION}.
+          
+          ### Resolution Steps
+          
+          1. Pull the latest changes:
+             \`\`\`bash
+             git fetch upstream
+             git checkout development
+             git merge upstream/${UPSTREAM_TAG}
+             \`\`\`
+          
+          2. Resolve the conflicts
+          
+          3. Commit the changes:
+             \`\`\`bash
+             git add .
+             git commit -m \"chore: resolve upstream sync conflicts for v${UPSTREAM_VERSION}\"
+             \`\`\`
+          
+          4. Push and re-run the workflow:
+             \`\`\`bash
+             git push origin development
+             \`\`\`
+          
+          5. Then manually trigger the sync workflow with \`force_rebuild=true\`
+          
+          ### Affected Files
+          
+          Run \`git diff --name-only upstream/${UPSTREAM_TAG}...development\` to see which files differ.
+
+          ---
+          *This issue was automatically created by the sync-upstream workflow.*"
+
+            # Clean up temp branch
+            git branch -D "$TEMP_BRANCH" 2>/dev/null || true
+
+            gh issue create \
+              --title "$ISSUE_TITLE" \
+              --body "$ISSUE_BODY" \
+              --label "upstream-sync,needs-resolution"
+
+            echo "::error::Merge conflict detected. Created GitHub issue for resolution."
+            exit 1
+          fi
+
+      - name: Update version tracking
+        if: steps.sync.outputs.merge_success == 'true'
+        env:
+          UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
+        run: |
+          echo "$UPSTREAM_VERSION" > .last-synced-version
+          git add .last-synced-version
+          git commit -m "chore: update synced version to ${UPSTREAM_VERSION}" --allow-empty
+
+      - name: Push changes
+        if: steps.sync.outputs.merge_success == 'true'
+        run: |
+          git push origin development
+          echo "✅ Pushed upstream sync to development"
+
+      - name: Trigger Linux build
+        if: steps.sync.outputs.merge_success == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
+          UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+          UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
+          UPSTREAM_BODY: ${{ needs.check-upstream.outputs.upstream_body }}
+          UPSTREAM_PRERELEASE: ${{ needs.check-upstream.outputs.upstream_prerelease }}
+        run: |
+          echo "🔨 Triggering Linux build for v${UPSTREAM_VERSION}..."
+
+          # Trigger the linux-build workflow with upstream release info
+          # Tag and name are synced with upstream
+          gh workflow run linux-build.yml \
+            -f create_release=true \
+            -f "tag_name=${UPSTREAM_TAG}" \
+            -f "release_name=${UPSTREAM_NAME}" \
+            -f "release_body=${UPSTREAM_BODY}" \
+            -f "prerelease=${UPSTREAM_PRERELEASE}"
+
+          echo "✅ Triggered linux-build.yml workflow"
+          echo "📦 Tag: ${UPSTREAM_TAG}"
+          echo "📝 Name: ${UPSTREAM_NAME}"
+          echo "🏷️ Pre-release: ${UPSTREAM_PRERELEASE}"
+
+  post-release:
+    name: Post Release
+    needs: [check-upstream, sync-and-build]
+    runs-on: ubuntu-latest
+    if: always() && needs.sync-and-build.result == 'success'
+
+    steps:
+      - name: Wait for build to complete
+        id: wait
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
+        run: |
+          echo "⏳ Waiting for linux-build workflow to complete..."
+          
+          # Get the latest workflow run
+          for i in $(seq 1 30); do
+            sleep 120  # Wait 2 minutes between checks
+            
+            RUN_STATUS=$(gh run list --workflow=linux-build.yml --limit=1 --json status,conclusion -q '.[0].status')
+            RUN_CONCLUSION=$(gh run list --workflow=linux-build.yml --limit=1 --json status,conclusion -q '.[0].conclusion')
+            
+            echo "🔄 Check $i/30: Status=$RUN_STATUS, Conclusion=$RUN_CONCLUSION"
+            
+            if [ "$RUN_STATUS" = "completed" ]; then
+              if [ "$RUN_CONCLUSION" = "success" ]; then
+                echo "✅ Build completed successfully!"
+                echo "build_success=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "❌ Build failed with conclusion: $RUN_CONCLUSION"
+                echo "build_success=false" >> "$GITHUB_OUTPUT"
+              fi
+              exit 0
+            fi
+          done
+          
+          echo "⏰ Timed out waiting for build to complete"
+          echo "build_success=false" >> "$GITHUB_OUTPUT"
+
+      - name: Add checksums to release
+        if: steps.wait.outputs.build_success == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+        run: |
+          echo "📝 Adding SHA256 checksums to release..."
+          
+          # Use upstream tag directly
+          TAG="${UPSTREAM_TAG}"
+          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || echo "")
+          
+          if [ -z "$RELEASE_ID" ]; then
+            echo "⚠️ Release not found for tag: $TAG"
+            exit 0
+          fi
+          
+          # Download all assets and generate checksums
+          WORK_DIR=$(mktemp -d)
+          cd "$WORK_DIR"
+          
+          gh release download "$TAG" --pattern "*" --dir . 2>/dev/null || true
+          
+          if [ -n "$(ls -A)" ]; then
+            sha256sum * > SHA256SUMS.txt
+            echo "📋 Generated checksums:"
+            cat SHA256SUMS.txt
+            
+            # Upload checksums to release
+            gh release upload "$TAG" SHA256SUMS.txt --clobber
+            echo "✅ Uploaded SHA256SUMS.txt to release"
+          else
+            echo "⚠️ No release assets found"
+          fi
+          
+          rm -rf "$WORK_DIR"
+
+      - name: Update summary
+        if: always()
+        env:
+          UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
+          UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
+          UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
+          BUILD_SUCCESS: ${{ steps.wait.outputs.build_success }}
+        run: |
+          echo "## 🚀 Upstream Sync Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Upstream Version | \`$UPSTREAM_VERSION\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release Tag | \`$UPSTREAM_TAG\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Release Name | $UPSTREAM_NAME |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sync & Merge | ✅ Success |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Linux Build | $([ "$BUILD_SUCCESS" = "true" ] && echo "✅ Success" || echo "❌ Failed") |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$BUILD_SUCCESS" = "true" ]; then
+            echo "**Release:** [\`$UPSTREAM_TAG\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/$UPSTREAM_TAG)" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -59,7 +59,9 @@ const options: DebianOptions = {
     'libcurl3 | libcurl4',
     'libnotify4',
     'libsecret-1-0',
-    'gnome-keyring',
+  ],
+  recommends: [
+    'gnome-keyring | kwallet5 | seahorse',
   ],
   icon: {
     '32x32': 'app/static/linux/logos/32x32.png',

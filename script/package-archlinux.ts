@@ -38,7 +38,8 @@ license = MIT
 depend = libcurl-compat
 depend = libnotify
 depend = libsecret
-depend = gnome-keyring
+optdepend = gnome-keyring: GNOME Secret Service backend
+optdepend = kwallet: KDE Secret Service backend
 `
 }
 
