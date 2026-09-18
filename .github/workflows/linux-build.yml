@@ -124,10 +124,14 @@ jobs:
 
       - name: Set release info
         id: release_info
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag_name }}
+          INPUT_NAME: ${{ github.event.inputs.release_name }}
+          INPUT_BODY: ${{ github.event.inputs.release_body }}
         run: |
-          TAG="${{ github.event.inputs.tag_name }}"
-          NAME="${{ github.event.inputs.release_name }}"
-          BODY="${{ github.event.inputs.release_body }}"
+          TAG="$INPUT_TAG"
+          NAME="$INPUT_NAME"
+          BODY="$INPUT_BODY"
 
           if [ -z "$TAG" ]; then
             TAG="linux-build-${{ github.run_number }}"
