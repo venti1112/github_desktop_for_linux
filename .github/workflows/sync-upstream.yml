@@ -146,11 +146,18 @@ jobs:
     if: needs.check-upstream.outputs.has_new_version == 'true' && inputs.dry_run != true
 
     steps:
+      - name: Generate app token
+        id: generate-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.DESKTOP_RELEASES_APP_ID }}
+          private-key: ${{ secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.generate-token.outputs.token }}
 
       - name: Configure Git
         run: |
@@ -269,7 +276,7 @@ jobs:
       - name: Trigger Linux build
         if: steps.sync.outputs.merge_success == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
           UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
           UPSTREAM_NAME: ${{ needs.check-upstream.outputs.upstream_name }}
@@ -304,10 +311,17 @@ jobs:
     if: always() && needs.sync-and-build.result == 'success'
 
     steps:
+      - name: Generate app token
+        id: generate-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.DESKTOP_RELEASES_APP_ID }}
+          private-key: ${{ secrets.DESKTOP_RELEASES_APP_PRIVATE_KEY }}
+
       - name: Wait for build to complete
         id: wait
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
           UPSTREAM_VERSION: ${{ needs.check-upstream.outputs.upstream_version }}
           CREATE_RELEASE: ${{ inputs.create_release }}
         run: |
@@ -341,7 +355,7 @@ jobs:
       - name: Add checksums to release
         if: steps.wait.outputs.build_success == 'true' && inputs.create_release == true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
           UPSTREAM_TAG: ${{ needs.check-upstream.outputs.upstream_tag }}
         run: |
           echo "📝 Adding SHA256 checksums to release..."
