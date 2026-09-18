@@ -87,7 +87,7 @@ jobs:
           else
             # Get latest release (including pre-releases)
             # Use 'releases' endpoint to get all releases, then select the first one
-            UPSTREAM_RELEASES=$(gh api repos/desktop/desktop/releases --paginate --jq '.[0:10]')
+            UPSTREAM_RELEASES=$(gh api repos/desktop/desktop/releases --jq '.[0:10]')
             UPSTREAM_RELEASE=$(echo "$UPSTREAM_RELEASES" | jq '.[0]')
             UPSTREAM_TAG=$(echo "$UPSTREAM_RELEASE" | jq -r '.tag_name')
             UPSTREAM_NAME=$(echo "$UPSTREAM_RELEASE" | jq -r '.name')
