@@ -293,6 +293,11 @@ import {
   getFloatNumber,
 } from '../local-storage'
 import { ExternalEditorError, suggestedExternalEditor } from '../editors/shared'
+import {
+  CopilotAppError,
+  findCopilotApp,
+  openInCopilotApp,
+} from '../copilot-app'
 import { ApiRepositoriesStore } from './api-repositories-store'
 import {
   updateChangedFiles,
@@ -303,6 +308,7 @@ import { ManualConflictResolution } from '../../models/manual-conflict-resolutio
 import { BranchPruner } from './helpers/branch-pruner'
 import {
   enableCopilotConflictResolution,
+  enableCopilotAppHandoff,
   enableCopilotSdkCommitMessageGeneration,
   enableCustomIntegration,
   enableWorktreeSupport,
@@ -548,6 +554,7 @@ const pullRequestSuggestedNextActionKey =
 
 export const useCustomEditorKey = 'use-custom-editor'
 const customEditorKey = 'custom-editor'
+const copilotAppPathKey = 'copilot-app-path'
 
 export const useCustomShellKey = 'use-custom-shell'
 const customShellKey = 'custom-shell'
@@ -718,6 +725,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   private useCustomEditor: boolean = false
   private customEditor: ICustomIntegration | null = null
+  private copilotAppPath: string | null = null
 
   private useCustomShell: boolean = false
   private customShell: ICustomIntegration | null = null
@@ -831,8 +839,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
       }
     }, InitialRepositoryIndicatorTimeout)
 
-    API.onTokenInvalidated(this.onTokenInvalidated)
-
     this.notificationsStore.onChecksFailedNotification(
       this.onChecksFailedNotification
     )
@@ -891,31 +897,6 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
 
     return zoomFactor
-  }
-
-  private onTokenInvalidated = (endpoint: string, token: string) => {
-    const account = getAccountForEndpoint(this.accounts, endpoint)
-
-    if (account === null) {
-      return
-    }
-
-    // If we have a token for the account but it doesn't match the token that
-    // was invalidated that likely means that someone held onto an account for
-    // longer than they should have which is bad but what's even worse is if we
-    // invalidate an active account.
-    if (account.token && account.token !== token) {
-      log.error(`Token for ${endpoint} invalidated but token mismatch`)
-      return
-    }
-
-    // If the token was invalidated for an account, sign out from that account
-    this._removeAccount(account)
-
-    this._showPopup({
-      type: PopupType.InvalidatedToken,
-      account,
-    })
   }
 
   private onShowInstallingUpdate = () => {
@@ -1056,6 +1037,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
       this.emitUpdate()
     })
     this.accountsStore.onDidError(error => this.emitError(error))
+    this.accountsStore.onTokenInvalidated(account => {
+      this._showPopup({ type: PopupType.InvalidatedToken, account })
+    })
 
     this.repositoriesStore.onDidUpdate(updateRepositories => {
       this.repositories = updateRepositories
@@ -1343,6 +1327,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
       customEditor: this.customEditor,
       useCustomShell: this.useCustomShell,
       customShell: this.customShell,
+      copilotAppPath: this.copilotAppPath,
       showCIStatusPopover: this.showCIStatusPopover,
       notificationsEnabled: getNotificationsEnabled(),
       pullRequestSuggestedNextAction: this.pullRequestSuggestedNextAction,
@@ -2593,6 +2578,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.useCustomEditor =
       enableCustomIntegration() && getBoolean(useCustomEditorKey, false)
     this.customEditor = getObject<ICustomIntegration>(customEditorKey) ?? null
+    this.copilotAppPath = localStorage.getItem(copilotAppPathKey)
 
     this.useCustomShell =
       enableCustomIntegration() && getBoolean(useCustomShellKey, false)
@@ -7684,6 +7670,49 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _openInCopilotApp(repositoryPath: string): Promise<void> {
+    if (!enableCopilotAppHandoff()) {
+      log.debug('Ignoring unavailable Copilot app handoff')
+      return
+    }
+
+    try {
+      const appPath =
+        this.copilotAppPath !== null
+          ? this.copilotAppPath
+          : (await findCopilotApp()) ?? undefined
+      if (appPath === undefined) {
+        throw new CopilotAppError(
+          'not-found',
+          'GitHub Copilot could not be found.'
+        )
+      }
+
+      await openInCopilotApp(appPath, repositoryPath)
+    } catch (error) {
+      log.error('Could not hand off to GitHub Copilot', error)
+      if (error instanceof CopilotAppError && error.kind === 'not-found') {
+        this._showPopup({
+          type: PopupType.CopilotAppNotFound,
+        })
+      } else {
+        throw error
+      }
+    }
+  }
+
+  /** This shouldn't be called directly. See `Dispatcher`. */
+  public async _setCopilotAppPath(path: string | null): Promise<void> {
+    if (path === null) {
+      localStorage.removeItem(copilotAppPathKey)
+    } else {
+      localStorage.setItem(copilotAppPathKey, path)
+    }
+    this.copilotAppPath = path
+    this.emitUpdate()
+  }
+
   /** Open a path using a selected editor without changing preferences. */
   public async _openInSelectedExternalEditor(
     fullPath: string,
@@ -8088,8 +8117,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
     log.info(
       `[AppStore] removing account ${account.login} (${account.name}) from store`
     )
-    await this.accountsStore.removeAccount(account)
-    await deleteToken(account)
+    const current = await this.accountsStore.removeAccount(account)
+    if (current?.token) {
+      await deleteToken(current)
+    }
   }
 
   private async _addAccount(account: Account): Promise<void> {
