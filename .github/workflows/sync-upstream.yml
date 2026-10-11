@@ -28,7 +28,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   check-upstream:
@@ -201,60 +200,38 @@ jobs:
             echo "⚠️ Merge conflict detected"
             echo "merge_success=false" >> "$GITHUB_OUTPUT"
 
-            # Abort the merge
+            # Collect the list of conflicted files, then abort the merge to
+            # leave the workspace clean
+            CONFLICTED_FILES=$(git diff --name-only --diff-filter=U)
             git merge --abort
-
-            # Create an issue for manual resolution
-            ISSUE_TITLE="⚠️ Upstream Sync Conflict: v${UPSTREAM_VERSION}"
-            ISSUE_BODY="## Upstream Version: ${UPSTREAM_VERSION}
-          
-          **Tag:** \`${UPSTREAM_TAG}\`
-          **Detected at:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          
-          ### Description
-          
-          There are merge conflicts between the upstream repository and the local \`development\` branch when syncing version ${UPSTREAM_VERSION}.
-          
-          ### Resolution Steps
-          
-          1. Pull the latest changes:
-             \`\`\`bash
-             git fetch upstream
-             git checkout development
-             git merge upstream/${UPSTREAM_TAG}
-             \`\`\`
-          
-          2. Resolve the conflicts
-          
-          3. Commit the changes:
-             \`\`\`bash
-             git add .
-             git commit -m \"chore: resolve upstream sync conflicts for v${UPSTREAM_VERSION}\"
-             \`\`\`
-          
-          4. Push and re-run the workflow:
-             \`\`\`bash
-             git push origin development
-             \`\`\`
-          
-          5. Then manually trigger the sync workflow with \`force_rebuild=true\`
-          
-          ### Affected Files
-          
-          Run \`git diff --name-only upstream/${UPSTREAM_TAG}...development\` to see which files differ.
-
-          ---
-          *This issue was automatically created by the sync-upstream workflow.*"
 
             # Clean up temp branch
             git branch -D "$TEMP_BRANCH" 2>/dev/null || true
 
-            gh issue create \
-              --title "$ISSUE_TITLE" \
-              --body "$ISSUE_BODY" \
-              --label "upstream-sync,needs-resolution"
+            echo "❌ Conflicting files:"
+            echo "$CONFLICTED_FILES"
 
-            echo "::error::Merge conflict detected. Created GitHub issue for resolution."
+            {
+              echo "## ❌ Upstream Sync Conflict"
+              echo ""
+              echo "Merge conflicts between upstream \`${UPSTREAM_TAG}\` and \`development\`."
+              echo ""
+              echo "### Conflicting files"
+              echo ""
+              echo "$CONFLICTED_FILES" | sed -e 's/^/- \`/' -e 's/$/\`/'
+              echo ""
+              echo "### Resolve locally"
+              echo ""
+              echo '```bash'
+              echo "git fetch upstream"
+              echo "git merge upstream/${UPSTREAM_TAG}"
+              echo "# ...resolve conflicts..."
+              echo "git commit"
+              echo "git push origin development"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "::error::Merge conflict detected between upstream ${UPSTREAM_TAG} and development. See step summary for conflicting files."
             exit 1
           fi
 
