@@ -1,0 +1,1391 @@
+diff --git a/app/src/lib/notifications/show-notification.ts b/app/src/lib/notifications/show-notification.ts
+index ca8b2a66f8..0781c11dd0 100644
+--- a/app/src/lib/notifications/show-notification.ts
++++ b/app/src/lib/notifications/show-notification.ts
+@@ -25,7 +25,9 @@ export async function showNotification(
+ ): Promise<boolean> {
+   // `supportNotifications` checks if `desktop-notifications` is supported by
+   // the current platform. Otherwise, we'll rely on the HTML5 notification API.
+-  if (!supportsNotifications()) {
++  // desktop-notifications implements macOS and Windows only. Linux is handled
++  // by Electron's main-process Notification API, so it must use IPC as well.
++  if (!__LINUX__ && !supportsNotifications()) {
+     if (typeof Notification === 'undefined') {
+       log.warn('System notifications are unavailable')
+       return false
+diff --git a/app/src/lib/stores/copilot-store.ts b/app/src/lib/stores/copilot-store.ts
+index 2774379ecc..44cd1b0028 100644
+--- a/app/src/lib/stores/copilot-store.ts
++++ b/app/src/lib/stores/copilot-store.ts
+@@ -486,7 +486,7 @@ ${diffBlock}`
+ /** Ordered reasoning effort levels from lowest to highest. */
+ export const ReasoningEffortOrder = ['low', 'medium', 'high', 'xhigh'] as const
+ 
+-export type ReasoningEffort = typeof ReasoningEffortOrder[number]
++export type ReasoningEffort = (typeof ReasoningEffortOrder)[number]
+ 
+ /** Formats a reasoning effort for display, e.g. 'xhigh' → 'Extra high'. */
+ export function formatReasoningEffort(effort: ReasoningEffort): string {
+diff --git a/app/src/main-process/app-window.ts b/app/src/main-process/app-window.ts
+index 53d7505b28..e434031d5e 100644
+--- a/app/src/main-process/app-window.ts
++++ b/app/src/main-process/app-window.ts
+@@ -447,6 +447,11 @@ export class AppWindow {
+   }
+ 
+   public async checkForUpdates(url: string) {
++    // Linux doesn't have an official build, so turn off automatic updates
++    if (process.platform === 'linux') {
++      return undefined
++    }
++
+     try {
+       autoUpdater.setFeedURL({ url: await trySetUpdaterGuid(url) })
+       autoUpdater.checkForUpdates()
+diff --git a/app/src/main-process/main.ts b/app/src/main-process/main.ts
+index fd1f35025e..c8aeca863b 100644
+--- a/app/src/main-process/main.ts
++++ b/app/src/main-process/main.ts
+@@ -49,9 +49,12 @@ import { getMainGUID, saveGUIDFile } from '../lib/get-main-guid'
+ import {
+   getNotificationsPermission,
+   requestNotificationsPermission,
+-  showNotification,
++  showNotification as showNativeNotification,
+ } from 'desktop-notifications'
+-import { initializeDesktopNotifications } from './notifications'
++import {
++  initializeDesktopNotifications,
++  showLinuxNotification,
++} from './notifications'
+ import parseCommandLineArgs from 'minimist'
+ import { CLIAction } from '../lib/cli-action'
+ 
+@@ -192,7 +195,26 @@ if (!handlingSquirrelEvent) {
+       mainWindow.focus()
+     }
+ 
+-    handleCommandLineArguments(args)
++    // On Linux, the protocol URL is passed as a command line argument
++    // without the --protocol-launcher flag. Check for protocol URLs first.
++    const prefixes = Array.from(possibleProtocols, p => `${p}://`)
++    const protocolUrl = args.find(arg => {
++      if (prefixes.some(p => arg.startsWith(p))) {
++        try {
++          new URL(arg)
++          return true
++        } catch (e) {
++          log.error(`Unable to parse argument as URL: ${arg}`)
++        }
++      }
++      return false
++    })
++
++    if (protocolUrl) {
++      handleAppURL(protocolUrl)
++    } else {
++      handleCommandLineArguments(args)
++    }
+   })
+ 
+   if (isDuplicateInstance) {
+@@ -755,7 +777,9 @@ app.on('ready', () => {
+   ipcMain.handle('save-guid', (_, guid) => saveGUIDFile(guid))
+ 
+   ipcMain.handle('show-notification', async (_, title, body, userInfo) =>
+-    showNotification(title, body, userInfo)
++    __LINUX__
++      ? showLinuxNotification(title, body, userInfo)
++      : showNativeNotification(title, body, userInfo)
+   )
+ 
+   ipcMain.handle('get-notifications-permission', async () =>
+diff --git a/app/src/main-process/menu/menu-event.ts b/app/src/main-process/menu/menu-event.ts
+index 3bd83a541d..05414cae89 100644
+--- a/app/src/main-process/menu/menu-event.ts
++++ b/app/src/main-process/menu/menu-event.ts
+@@ -96,7 +96,7 @@ const TestMenuEvents = [
+   'test-cli-action',
+ ] as const
+ 
+-export type TestMenuEvent = typeof TestMenuEvents[number]
++export type TestMenuEvent = (typeof TestMenuEvents)[number]
+ 
+ export function isTestMenuEvent(value: any): value is TestMenuEvent {
+   return TestMenuEvents.includes(value)
+diff --git a/app/src/main-process/notifications.ts b/app/src/main-process/notifications.ts
+index 0ae209ca46..67d2b03669 100644
+--- a/app/src/main-process/notifications.ts
++++ b/app/src/main-process/notifications.ts
+@@ -3,16 +3,23 @@ import {
+   onNotificationEvent,
+   terminateNotifications,
+ } from 'desktop-notifications'
+-import { BrowserWindow } from 'electron'
++import { BrowserWindow, Notification } from 'electron'
++import * as path from 'path'
+ import { findToastActivatorClsid } from '../lib/find-toast-activator-clsid'
+ import { DesktopAliveEvent } from '../lib/stores/alive-store'
+ import * as ipcWebContents from './ipc-webcontents'
+ 
+ let windowsToastActivatorClsid: string | undefined = undefined
++const linuxNotifications = new Map<string, Notification>()
++const MaxLinuxNotifications = 200
++
++let notificationEventCallback:
++  | ((event: 'click', id: string, userInfo: DesktopAliveEvent) => void)
++  | null = null
+ 
+ export function initializeDesktopNotifications() {
+   if (__LINUX__) {
+-    // notifications not currently supported
++    // Linux notifications use Electron's libnotify-backed Notification API.
+     return
+   }
+ 
+@@ -42,11 +49,15 @@ export function initializeDesktopNotifications() {
+ }
+ 
+ export function terminateDesktopNotifications() {
++  for (const notification of linuxNotifications.values()) {
++    notification.close()
++  }
++  linuxNotifications.clear()
+   terminateNotifications()
+ }
+ 
+ export function installNotificationCallback(window: BrowserWindow) {
+-  onNotificationEvent<DesktopAliveEvent>((event, id, userInfo) => {
++  notificationEventCallback = (event, id, userInfo) => {
+     ipcWebContents.send(
+       window.webContents,
+       'notification-event',
+@@ -54,5 +65,58 @@ export function installNotificationCallback(window: BrowserWindow) {
+       id,
+       userInfo
+     )
++  }
++
++  onNotificationEvent<DesktopAliveEvent>(notificationEventCallback)
++}
++
++/**
++ * Shows a Linux desktop notification and returns an ID that the renderer can
++ * associate with its in-memory click callback. Electron uses libnotify on
++ * Linux, which supports desktop environments implementing the freedesktop
++ * Desktop Notifications specification.
++ */
++export function showLinuxNotification(
++  title: string,
++  body: string,
++  userInfo?: DesktopAliveEvent
++): string | null {
++  if (!Notification.isSupported()) {
++    return null
++  }
++
++  const id = crypto.randomUUID()
++  const notification = new Notification({
++    title,
++    body,
++    icon: path.join(__dirname, 'static', 'icon-logo.png'),
++    urgency: 'normal',
+   })
++
++  // Notification instances must stay referenced for click events to arrive.
++  if (linuxNotifications.size >= MaxLinuxNotifications) {
++    const oldestID = linuxNotifications.keys().next().value
++    if (oldestID !== undefined) {
++      linuxNotifications.get(oldestID)?.close()
++      linuxNotifications.delete(oldestID)
++    }
++  }
++  linuxNotifications.set(id, notification)
++
++  notification.once('click', () => {
++    linuxNotifications.delete(id)
++    // The renderer first resolves its in-memory callback by ID. The optional
++    // userInfo is only needed as a fallback after an app session change.
++    notificationEventCallback?.('click', id, userInfo as DesktopAliveEvent)
++  })
++  notification.once('close', () => linuxNotifications.delete(id))
++
++  try {
++    notification.show()
++    return id
++  } catch (error) {
++    linuxNotifications.delete(id)
++    log.error('Unable to show Linux desktop notification', error)
++    return null
++  }
+ }
+diff --git a/app/src/ui/app-menu/menu-pane.tsx b/app/src/ui/app-menu/menu-pane.tsx
+index 154855c9b1..f5743a4b56 100644
+--- a/app/src/ui/app-menu/menu-pane.tsx
++++ b/app/src/ui/app-menu/menu-pane.tsx
+@@ -301,7 +301,7 @@ const supportedKeys = [
+   'Enter',
+   ' ',
+ ] as const
+-const isSupportedKey = (key: string): key is typeof supportedKeys[number] =>
++const isSupportedKey = (key: string): key is (typeof supportedKeys)[number] =>
+   (supportedKeys as readonly string[]).includes(key)
+ 
+ const isPrintableCharacterKey = (key: string) =>
+diff --git a/app/src/ui/index.tsx b/app/src/ui/index.tsx
+index 6ce3932cad..3a954876ac 100644
+--- a/app/src/ui/index.tsx
++++ b/app/src/ui/index.tsx
+@@ -420,7 +420,7 @@ ipcRenderer.on('cli-action', (_, action) =>
+     delete defaults?.[k]
+     delete types?.[k]
+   })
+-})(Grid.defaultProps, Grid.propTypes)
++})(Grid.defaultProps, (Grid as any).propTypes)
+ 
+ ReactDOM.render(
+   <App
+diff --git a/app/test/unit/ipc-contract-test.ts b/app/test/unit/ipc-contract-test.ts
+index 900bde503f..cffe80ca40 100644
+--- a/app/test/unit/ipc-contract-test.ts
++++ b/app/test/unit/ipc-contract-test.ts
+@@ -110,7 +110,7 @@ describe('IPC channel contract', () => {
+         expectedRequestChannels
+       const isExhaustive: AssertExactUnion<
+         keyof RequestChannels,
+-        typeof expectedRequestChannels[number]
++        (typeof expectedRequestChannels)[number]
+       > = true
+ 
+       assert.equal(isValid.length, expectedRequestChannels.length)
+@@ -140,7 +140,7 @@ describe('IPC channel contract', () => {
+         expectedResponseChannels
+       const isExhaustive: AssertExactUnion<
+         keyof RequestResponseChannels,
+-        typeof expectedResponseChannels[number]
++        (typeof expectedResponseChannels)[number]
+       > = true
+ 
+       assert.equal(isValid.length, expectedResponseChannels.length)
+diff --git a/app/test/unit/main-process/menu-test.ts b/app/test/unit/main-process/menu-test.ts
+index 6eeb8133a6..53b19ee004 100644
+--- a/app/test/unit/main-process/menu-test.ts
++++ b/app/test/unit/main-process/menu-test.ts
+@@ -203,7 +203,7 @@ describe('main-process menu', () => {
+       'askForConfirmationOnForcePush',
+     ] as const
+ 
+-    type VariantKey = typeof variantKeys[number]
++    type VariantKey = (typeof variantKeys)[number]
+ 
+     const baseParams: MenuLabelsEvent = {
+       selectedShell: null,
+diff --git a/package.json b/package.json
+index 671915d15e..5068430d75 100644
+--- a/package.json
++++ b/package.json
+@@ -28,7 +28,7 @@
+     "compile:prod": "cross-env NODE_ENV=production TS_NODE_PROJECT=script/tsconfig.json NODE_OPTIONS='--max_old_space_size=4096' webpack --config app/webpack.production.ts",
+     "build:dev": "yarn compile:dev && cross-env NODE_ENV=development ts-node -P script/tsconfig.json script/build.ts",
+     "build:prod": "yarn compile:prod && cross-env NODE_ENV=production ts-node -P script/tsconfig.json script/build.ts",
+-    "package": "ts-node -P script/tsconfig.json script/package.ts",
++    "package": "ts-node --files -P script/tsconfig.json script/package.ts",
+     "generate-octicons": "ts-node -P script/tsconfig.json script/generate-octicons.ts",
+     "generate-example-usage-data": "cross-env TEST_ENV=1 node --disable-warning=ExperimentalWarning --experimental-test-module-mocks --conditions=import --import tsx --import ./app/test/globals.mts script/generate-example-usage-data.mjs",
+     "compile:script": "tsc -P script/tsconfig.json",
+@@ -156,8 +156,12 @@
+     "@types/webpack-hot-middleware": "^2.25.9",
+     "diff": "^8.0.3",
+     "electron": "44.1.1",
++    "electron-builder": "^26.15.3",
++    "electron-installer-debian": "^4.0.0",
++    "electron-installer-redhat": "^4.0.0",
+     "electron-winstaller": "^5.0.0",
+     "eslint-plugin-github": "^5.1.5",
++    "fs-extra": "^11.4.0",
+     "markdownlint-cli": "^0.49.1",
+     "node-test-github-reporter": "^1.3.2",
+     "playwright": "^1.58.2",
+@@ -165,5 +169,8 @@
+     "tsconfig-paths": "^3.9.0",
+     "tsx": "^4.19.3",
+     "webpack-cli": "^6.0.1"
++  },
++  "resolutions": {
++    "@types/react": "^16.14.62"
+   }
+ }
+diff --git a/script/build.ts b/script/build.ts
+index 0b173f6789..6401f69c8b 100755
+--- a/script/build.ts
++++ b/script/build.ts
+@@ -170,6 +170,14 @@ async function packageApp() {
+       return targetArch
+     }
+ 
++    // Support Linux architecture names
++    if (targetArch === 'aarch64') {
++      return 'arm64'
++    }
++    if (targetArch === 'x86_64' || targetArch === 'amd64') {
++      return 'x64'
++    }
++
+     throw new Error(
+       `Building Desktop for architecture '${targetArch}' is not supported`
+     )
+diff --git a/script/electron-builder-linux.yml b/script/electron-builder-linux.yml
+new file mode 100644
+index 0000000000..10164362e0
+--- /dev/null
++++ b/script/electron-builder-linux.yml
+@@ -0,0 +1,14 @@
++artifactName: 'GitHubDesktop-${os}-${arch}-${version}.${ext}'
++
++linux:
++  category: 'GNOME;GTK;Development'
++  packageCategory: 'GNOME;GTK;Development'
++  icon: 'app/static/linux/logos'
++  mimeTypes:
++    - x-scheme-handler/x-github-client
++    - x-scheme-handler/x-github-desktop-auth
++    - x-scheme-handler/x-github-desktop-dev-auth
++  target:
++    - AppImage
++  maintainer: 'GitHub Desktop Team'
++  description: 'Simple collaboration from your desktop'
+diff --git a/script/package-archlinux.ts b/script/package-archlinux.ts
+new file mode 100644
+index 0000000000..7b13be9d96
+--- /dev/null
++++ b/script/package-archlinux.ts
+@@ -0,0 +1,224 @@
++/* eslint-disable no-sync */
++
++import * as path from 'path'
++import * as cp from 'child_process'
++import { rename } from 'fs-extra'
++import { getVersion } from '../app/package-info'
++import { getDistPath, getDistRoot } from './dist-info'
++import { mkdirSync, writeFileSync, rmSync, statSync } from 'fs'
++
++function getArchitecture() {
++  const arch = process.env.npm_config_arch || process.arch
++
++  switch (arch) {
++    case 'arm64':
++      return 'aarch64'
++    case 'arm':
++      return 'armv7h'
++    default:
++      return 'x86_64'
++  }
++}
++
++const distRoot = getDistRoot()
++
++function generatePKGINFO(arch: string, installedSize: number): string {
++  const version = getVersion().replace(/[:\-]/g, '.')
++  return `# Generated by GitHub Desktop packaging
++pkgbase = github-desktop
++pkgname = github-desktop
++pkgver = ${version}-1
++pkgdesc = Simple collaboration from your desktop
++url = https://github.com/desktop/desktop
++arch = ${arch}
++builddate = ${Math.floor(Date.now() / 1000)}
++packager = GitHub Desktop Team <github@github.com>
++size = ${installedSize}
++license = MIT
++depend = libcurl-compat
++depend = libnotify
++depend = libsecret
++optdepend = gnome-keyring: GNOME Secret Service backend
++optdepend = kwallet: KDE Secret Service backend
++`
++}
++
++function generateBUILDINFO(arch: string): string {
++  const version = getVersion().replace(/[:\-]/g, '.')
++  const builddate = Math.floor(Date.now() / 1000)
++  return `format = 2
++pkgname = github-desktop
++pkgbase = github-desktop
++pkgver = ${version}-1
++pkgarch = ${arch}
++packager = GitHub Desktop Team <github@github.com>
++builddate = ${builddate}
++builddir = .
++startdir = .
++buildtool = github-desktop-packager
++`
++}
++
++function getInstalledSize(dirPath: string): number {
++  let totalSize = 0
++  const result = cp.spawnSync('find', [dirPath, '-type', 'f'], {
++    encoding: 'utf-8',
++  })
++  if (result.stdout) {
++    const files = result.stdout.trim().split('\n').filter(Boolean)
++    for (const file of files) {
++      try {
++        totalSize += statSync(file).size
++      } catch {
++        // skip files we can't stat
++      }
++    }
++  }
++  return totalSize
++}
++
++export async function packageArchLinux(): Promise<string> {
++  if (process.platform === 'win32') {
++    return Promise.reject('Windows is not supported')
++  }
++
++  const arch = getArchitecture()
++  const version = getVersion().replace(/[:\-]/g, '.')
++
++  const buildDir = path.join(distRoot, `archbuild-${arch}`)
++  const pkgDir = path.join(buildDir, 'pkg')
++
++  // Clean and create directories
++  rmSync(buildDir, { recursive: true, force: true })
++  mkdirSync(pkgDir, { recursive: true })
++
++  // Create directory structure in pkg
++  const dirs = [
++    `${pkgDir}/opt/github-desktop`,
++    `${pkgDir}/usr/bin`,
++    `${pkgDir}/usr/share/applications`,
++    `${pkgDir}/usr/share/icons/hicolor/512x512/apps`,
++    `${pkgDir}/usr/share/icons/hicolor/256x256/apps`,
++    `${pkgDir}/usr/share/icons/hicolor/128x128/apps`,
++    `${pkgDir}/usr/share/icons/hicolor/64x64/apps`,
++    `${pkgDir}/usr/share/icons/hicolor/32x32/apps`,
++  ]
++
++  for (const dir of dirs) {
++    mkdirSync(dir, { recursive: true })
++  }
++
++  // Copy application files
++  const cpResult = cp.spawnSync(
++    'cp',
++    ['-r', `${getDistPath()}/.`, `${pkgDir}/opt/github-desktop/`],
++    {
++      stdio: 'inherit',
++    }
++  )
++  if (cpResult.status !== 0) {
++    return Promise.reject(
++      new Error(
++        `Failed to copy application files to ${pkgDir}/opt/github-desktop/`
++      )
++    )
++  }
++
++  // Copy icons
++  const iconSizes = ['32x32', '64x64', '128x128', '256x256', '512x512']
++  for (const size of iconSizes) {
++    const src = path.join(
++      __dirname,
++      '..',
++      'app',
++      'static',
++      'linux',
++      'logos',
++      `${size}.png`
++    )
++    const dest = path.join(
++      pkgDir,
++      'usr',
++      'share',
++      'icons',
++      'hicolor',
++      size,
++      'apps',
++      'github-desktop.png'
++    )
++    cp.spawnSync('cp', [src, dest], { stdio: 'inherit' })
++  }
++
++  // Create symlink for binary
++  const lnResult = cp.spawnSync(
++    'ln',
++    ['-sf', '/opt/github-desktop/desktop', `${pkgDir}/usr/bin/github-desktop`],
++    {
++      stdio: 'inherit',
++    }
++  )
++  if (lnResult.status !== 0) {
++    return Promise.reject(new Error('Failed to create binary symlink'))
++  }
++
++  // Create desktop file
++  const desktopContent = `[Desktop Entry]
++Name=GitHub Desktop
++Comment=Git GUI
++Exec=/opt/github-desktop/desktop %U
++Icon=github-desktop
++Type=Application
++Categories=GNOME;GTK;Development;RevisionControl;
++MimeType=x-scheme-handler/x-github-client;x-scheme-handler/x-github-desktop-auth;
++`
++  writeFileSync(
++    `${pkgDir}/usr/share/applications/github-desktop.desktop`,
++    desktopContent
++  )
++
++  // Calculate installed size
++  const installedSize = getInstalledSize(pkgDir)
++
++  // Create .PKGINFO and .BUILDINFO in pkgDir (same as makepkg)
++  writeFileSync(
++    path.join(pkgDir, '.PKGINFO'),
++    generatePKGINFO(arch, installedSize)
++  )
++  writeFileSync(path.join(pkgDir, '.BUILDINFO'), generateBUILDINFO(arch))
++
++  // Generate .MTREE using bsdtar (same approach as makepkg)
++  // Use -printf '%P' to strip the leading './' so paths match what pacman expects
++  const mtreeCmd = `cd '${pkgDir}' && find . -mindepth 1 -printf '%P\\0' | LANG=C bsdtar -cnf - --format=mtree --options='!all,use-set,type,uid,gid,mode,time,size,sha256,link' --null --files-from - --exclude .MTREE | gzip -c -f -n > .MTREE`
++  const mtreeResult = cp.spawnSync('sh', ['-c', mtreeCmd], { stdio: 'inherit' })
++  if (mtreeResult.status !== 0) {
++    return Promise.reject(
++      new Error(
++        'Failed to generate .MTREE file (is bsdtar/libarchive-tools installed?)'
++      )
++    )
++  }
++
++  // Create the tar archive using the same approach as makepkg
++  const pkgFileName = `github-desktop-${version}-1-${arch}.pkg.tar.zst`
++  const pkgPath = path.join(distRoot, pkgFileName)
++
++  const tarCmd = `cd '${pkgDir}' && find . -mindepth 1 -printf '%P\\0' | LANG=C bsdtar --no-fflags --no-read-sparse -cnf - --null --files-from - | zstd -T0 -19 > '${pkgPath}'`
++  const tarResult = cp.spawnSync('sh', ['-c', tarCmd], { stdio: 'inherit' })
++
++  if (tarResult.error || tarResult.status !== 0) {
++    return Promise.reject(
++      new Error(
++        `Failed to create package archive: ${
++          tarResult.error?.message || `exit code ${tarResult.status}`
++        }`
++      )
++    )
++  }
++
++  // Rename to our naming convention
++  const newFileName = `GitHubDesktop-linux-${arch}-${getVersion()}.pkg.tar.zst`
++  const newPath = path.join(distRoot, newFileName)
++  await rename(pkgPath, newPath)
++
++  return Promise.resolve(newPath)
++}
+diff --git a/script/package-debian.ts b/script/package-debian.ts
+new file mode 100644
+index 0000000000..99ca0c3f9f
+--- /dev/null
++++ b/script/package-debian.ts
+@@ -0,0 +1,110 @@
++import { promisify } from 'util'
++import { join } from 'path'
++import glob = require('glob')
++const globPromise = promisify(glob)
++import { rename } from 'fs-extra'
++import { getVersion } from '../app/package-info'
++import { getDistPath, getDistRoot } from './dist-info'
++
++function getArchitecture() {
++  const arch = process.env.npm_config_arch || process.arch
++
++  switch (arch) {
++    case 'arm64':
++      return 'arm64'
++    case 'arm':
++      return 'armhf'
++    default:
++      return 'amd64'
++  }
++}
++
++const distRoot = getDistRoot()
++
++type DebianOptions = {
++  src: string
++  dest: string
++  name?: string
++  arch: 'amd64' | 'i386' | 'arm64' | 'armhf'
++  description?: string
++  productDescription?: string
++  categories?: Array<string>
++  section?: string
++  priority?: 'required' | 'important' | 'standard' | 'optional' | 'extra'
++  homepage?: string
++  icon?: any
++  scripts?: {
++    preinst?: string
++    postinst?: string
++    prerm?: string
++    postrm?: string
++  }
++  mimeType?: Array<string>
++  maintainer?: string
++  depends?: Array<string>
++  recommends?: Array<string>
++}
++
++const options: DebianOptions = {
++  src: getDistPath(),
++  dest: distRoot,
++  name: 'github-desktop',
++  arch: getArchitecture() as 'amd64' | 'i386' | 'arm64' | 'armhf',
++  description: 'Simple collaboration from your desktop',
++  productDescription:
++    'This is the unofficial port of GitHub Desktop for Linux distributions',
++  section: 'GNOME;GTK;Development',
++  priority: 'extra',
++  homepage: 'https://github.com/desktop/desktop',
++  depends: [
++    'libcurl3 | libcurl4',
++    'libnotify4',
++    'libsecret-1-0',
++  ],
++  recommends: [
++    'gnome-keyring | kwallet5 | seahorse',
++  ],
++  icon: {
++    '32x32': 'app/static/linux/logos/32x32.png',
++    '64x64': 'app/static/linux/logos/64x64.png',
++    '128x128': 'app/static/linux/logos/128x128.png',
++    '256x256': 'app/static/linux/logos/256x256.png',
++    '512x512': 'app/static/linux/logos/512x512.png',
++    '1024x1024': 'app/static/linux/logos/1024x1024.png',
++  },
++  scripts: {
++    postinst: 'script/resources/deb/postinst.sh',
++    postrm: 'script/resources/deb/postrm.sh',
++  },
++  mimeType: [
++    'x-scheme-handler/x-github-client',
++    'x-scheme-handler/x-github-desktop-auth',
++    'x-scheme-handler/x-github-desktop-dev-auth',
++  ],
++  maintainer: 'GitHub Desktop Team',
++}
++
++export async function packageDebian(): Promise<string> {
++  if (process.platform === 'win32') {
++    return Promise.reject('Windows is not supported')
++  }
++
++  const { default: installer } = await import('electron-installer-debian')
++  await installer(options)
++
++  const installersPath = `${distRoot}/github-desktop*.deb`
++  const files = await globPromise(installersPath)
++
++  if (files.length !== 1) {
++    return Promise.reject(
++      `Expected one file but instead found '${files.join(', ')}' - exiting...`
++    )
++  }
++
++  const oldPath = files[0]
++  const newFileName = `GitHubDesktop-linux-${getArchitecture()}-${getVersion()}.deb`
++  const newPath = join(distRoot, newFileName)
++
++  await rename(oldPath, newPath)
++  return Promise.resolve(newPath)
++}
+diff --git a/script/package-electron-builder.ts b/script/package-electron-builder.ts
+new file mode 100644
+index 0000000000..f2c27eef3b
+--- /dev/null
++++ b/script/package-electron-builder.ts
+@@ -0,0 +1,64 @@
++/* eslint-disable no-sync */
++import * as path from 'path'
++import * as cp from 'child_process'
++import { promisify } from 'util'
++import glob = require('glob')
++const globPromise = promisify(glob)
++import { getDistPath, getDistRoot } from './dist-info'
++
++function getArchitecture() {
++  const arch = process.env.npm_config_arch || process.arch
++
++  switch (arch) {
++    case 'arm64':
++      return '--arm64'
++    case 'arm':
++      return '--armv7l'
++    default:
++      return '--x64'
++  }
++}
++
++export async function packageElectronBuilder(): Promise<Array<string>> {
++  const distPath = getDistPath()
++  const distRoot = getDistRoot()
++
++  const electronBuilder = path.resolve(
++    __dirname,
++    '..',
++    'node_modules',
++    '.bin',
++    'electron-builder'
++  )
++
++  const configPath = path.resolve(__dirname, 'electron-builder-linux.yml')
++
++  const args = [
++    'build',
++    '--prepackaged',
++    distPath,
++    getArchitecture(),
++    '--config',
++    configPath,
++  ]
++
++  const { error } = cp.spawnSync(electronBuilder, args, { stdio: 'inherit' })
++
++  if (error != null) {
++    return Promise.reject(error)
++  }
++
++  const appImageInstaller = `${distRoot}/GitHubDesktop-linux-*.AppImage`
++  const files = await globPromise(appImageInstaller)
++
++  if (files.length !== 1) {
++    return Promise.reject(
++      `Expected one AppImage installer but instead found '${files.join(
++        ', '
++      )}' - exiting...`
++    )
++  }
++
++  const appImageInstallerPath = files[0]
++  return Promise.resolve([appImageInstallerPath])
++}
+diff --git a/script/package-redhat.ts b/script/package-redhat.ts
+new file mode 100644
+index 0000000000..e57004a302
+--- /dev/null
++++ b/script/package-redhat.ts
+@@ -0,0 +1,108 @@
++import { promisify } from 'util'
++import { join } from 'path'
++import glob = require('glob')
++const globPromise = promisify(glob)
++import { rename } from 'fs-extra'
++import { getVersion } from '../app/package-info'
++import { getDistPath, getDistRoot } from './dist-info'
++
++function getArchitecture() {
++  const arch = process.env.npm_config_arch || process.arch
++
++  switch (arch) {
++    case 'arm64':
++      return 'aarch64'
++    case 'arm':
++      return 'armv7l'
++    default:
++      return 'x86_64'
++  }
++}
++
++const distRoot = getDistRoot()
++
++type RedhatOptions = {
++  src: string
++  dest: string
++  name?: string
++  arch: string
++  description?: string
++  productDescription?: string
++  categories?: Array<string>
++  icon?: any
++  specTemplate?: string
++  scripts?: {
++    pre?: string
++    post?: string
++    preun?: string
++    postun?: string
++  }
++  homepage?: string
++  mimeType?: Array<string>
++  requires?: Array<string>
++  recommends?: Array<string>
++}
++
++const options: RedhatOptions = {
++  src: getDistPath(),
++  dest: distRoot,
++  name: 'github-desktop',
++  arch: getArchitecture(),
++  specTemplate: join(__dirname, 'resources/rpm/github-desktop.spec'),
++  description: 'Simple collaboration from your desktop',
++  productDescription:
++    'This is the unofficial port of GitHub Desktop for Linux distributions',
++  categories: ['GNOME', 'GTK', 'Development'],
++  requires: [
++    '(libcurl or libcurl4)',
++    'libnotify',
++    'libsecret',
++  ],
++  recommends: [
++    'gnome-keyring',
++    'kwallet',
++  ],
++  icon: {
++    '32x32': 'app/static/linux/logos/32x32.png',
++    '64x64': 'app/static/linux/logos/64x64.png',
++    '128x128': 'app/static/linux/logos/128x128.png',
++    '256x256': 'app/static/linux/logos/256x256.png',
++    '512x512': 'app/static/linux/logos/512x512.png',
++    '1024x1024': 'app/static/linux/logos/1024x1024.png',
++  },
++  scripts: {
++    post: 'script/resources/rpm/post.sh',
++    preun: 'script/resources/rpm/preun.sh',
++  },
++  homepage: 'https://github.com/desktop/desktop',
++  mimeType: [
++    'x-scheme-handler/x-github-client',
++    'x-scheme-handler/x-github-desktop-auth',
++    'x-scheme-handler/x-github-desktop-dev-auth',
++  ],
++}
++
++export async function packageRedhat(): Promise<string> {
++  if (process.platform === 'win32') {
++    return Promise.reject('Windows is not supported')
++  }
++
++  const { default: installer } = await import('electron-installer-redhat')
++  await installer(options)
++
++  const installersPath = `${distRoot}/github-desktop*.rpm`
++  const files = await globPromise(installersPath)
++
++  if (files.length !== 1) {
++    return Promise.reject(
++      `Expected one file but instead found '${files.join(', ')}' - exiting...`
++    )
++  }
++
++  const oldPath = files[0]
++  const newFileName = `GitHubDesktop-linux-${getArchitecture()}-${getVersion()}.rpm`
++  const newPath = join(distRoot, newFileName)
++
++  await rename(oldPath, newPath)
++  return Promise.resolve(newPath)
++}
+diff --git a/script/package-tarball.ts b/script/package-tarball.ts
+new file mode 100644
+index 0000000000..a1f3a0867c
+--- /dev/null
++++ b/script/package-tarball.ts
+@@ -0,0 +1,74 @@
++/* eslint-disable no-sync */
++
++import * as path from 'path'
++import * as cp from 'child_process'
++import { getVersion } from '../app/package-info'
++import { getDistPath, getDistRoot } from './dist-info'
++import { mkdirSync, rmSync, copyFileSync } from 'fs'
++
++function getArchitecture() {
++  const arch = process.env.npm_config_arch || process.arch
++
++  switch (arch) {
++    case 'arm64':
++      return 'arm64'
++    case 'arm':
++      return 'armv7l'
++    default:
++      return 'x86_64'
++  }
++}
++
++const distRoot = getDistRoot()
++
++export async function packageTarball(): Promise<string> {
++  if (process.platform === 'win32') {
++    return Promise.reject('Windows is not supported')
++  }
++
++  const arch = getArchitecture()
++  const version = getVersion().replace(/[:\-]/g, '.')
++
++  const buildDir = path.join(distRoot, `tarball-build-${arch}`)
++  const pkgDir = path.join(buildDir, `GitHubDesktop-linux-${arch}-${version}`)
++
++  // Clean and create directories
++  rmSync(buildDir, { recursive: true, force: true })
++  mkdirSync(pkgDir, { recursive: true })
++
++  // Copy application files
++  const cpResult = cp.spawnSync('cp', ['-r', `${getDistPath()}/.`, pkgDir], {
++    stdio: 'inherit',
++  })
++  if (cpResult.status !== 0) {
++    return Promise.reject(
++      new Error(`Failed to copy application files to ${pkgDir}`)
++    )
++  }
++
++  // Copy LICENSE file
++  copyFileSync(
++    path.join(__dirname, '..', 'LICENSE'),
++    path.join(pkgDir, 'LICENSE')
++  )
++
++  // Create the tar.gz archive
++  const tarFileName = `GitHubDesktop-linux-${arch}-${version}.tar.gz`
++  const tarPath = path.join(distRoot, tarFileName)
++  const dirName = `GitHubDesktop-linux-${arch}-${version}`
++
++  const tarCmd = `cd '${buildDir}' && tar -czf '${tarPath}' '${dirName}'`
++  const tarResult = cp.spawnSync('sh', ['-c', tarCmd], { stdio: 'inherit' })
++
++  if (tarResult.error || tarResult.status !== 0) {
++    return Promise.reject(
++      new Error(
++        `Failed to create tar.gz archive: ${
++          tarResult.error?.message || `exit code ${tarResult.status}`
++        }`
++      )
++    )
++  }
++
++  return Promise.resolve(tarPath)
++}
+diff --git a/script/package.ts b/script/package.ts
+index ab724c02e7..88f718faf9 100644
+--- a/script/package.ts
++++ b/script/package.ts
+@@ -23,8 +23,14 @@ import { existsSync, rmSync, writeFileSync } from 'fs'
+ import { getVersion } from '../app/package-info'
+ import { computeBundleHashSync } from '../app/src/lib/compute-bundle-hash'
+ import { rename } from 'fs/promises'
++import { chmod, pathExists } from 'fs-extra'
+ import { join } from 'path'
+ import { assertNonNullable } from '../app/src/lib/fatal-error'
++import { packageElectronBuilder } from './package-electron-builder'
++import { packageDebian } from './package-debian'
++import { packageRedhat } from './package-redhat'
++import { packageArchLinux } from './package-archlinux'
++import { packageTarball } from './package-tarball'
+ 
+ const distPath = getDistPath()
+ const productName = getProductName()
+@@ -40,6 +46,8 @@ if (process.platform === 'darwin') {
+   packageOSX()
+ } else if (process.platform === 'win32') {
+   packageWindows()
++} else if (process.platform === 'linux') {
++  packageLinux()
+ } else {
+   console.error(`I don't know how to package for ${process.platform} :(`)
+   process.exit(1)
+@@ -59,6 +67,77 @@ writeFileSync(
+   })
+ )
+ 
++async function packageLinux() {
++  const helperPath = path.join(getDistPath(), 'chrome-sandbox')
++  const exists = await pathExists(helperPath)
++
++  if (exists) {
++    console.log('Updating file mode for chrome-sandbox…')
++    await chmod(helperPath, 0o4755)
++  }
++
++  const installers: string[] = []
++
++  try {
++    console.log('Building AppImage...')
++    const files = await packageElectronBuilder()
++    installers.push(...files)
++  } catch (err) {
++    console.warn('Warning: AppImage build failed:', err)
++  }
++
++  try {
++    console.log('Building deb package...')
++    const debianPackage = await packageDebian()
++    installers.push(debianPackage)
++  } catch (err) {
++    console.warn(
++      'Warning: deb package build skipped (dpkg-deb not available):',
++      err
++    )
++  }
++
++  try {
++    console.log('Building rpm package...')
++    const redhatPackage = await packageRedhat()
++    installers.push(redhatPackage)
++  } catch (err) {
++    console.warn(
++      'Warning: rpm package build skipped (rpmbuild not available):',
++      err
++    )
++  }
++
++  try {
++    console.log('Building Arch Linux package...')
++    const archlinuxPackage = await packageArchLinux()
++    installers.push(archlinuxPackage)
++  } catch (err) {
++    console.warn(
++      'Warning: Arch Linux package build skipped (makepkg not available):',
++      err
++    )
++  }
++
++  try {
++    console.log('Building tar.gz package...')
++    const tarballPackage = await packageTarball()
++    installers.push(tarballPackage)
++  } catch (err) {
++    console.warn('Warning: tar.gz package build skipped:', err)
++  }
++
++  if (installers.length > 0) {
++    console.log(`\nInstallers created:`)
++    for (const installer of installers) {
++      console.log(` - ${installer}`)
++    }
++  } else {
++    console.error('No installers were created')
++    process.exit(1)
++  }
++}
++
+ function packageOSX() {
+   const dest = getOSXZipPath()
+   rmSync(dest, { recursive: true, force: true })
+diff --git a/script/resources/deb/postinst.sh b/script/resources/deb/postinst.sh
+new file mode 100755
+index 0000000000..375fb2bcbd
+--- /dev/null
++++ b/script/resources/deb/postinst.sh
+@@ -0,0 +1,19 @@
++#!/bin/bash
++# Post-installation script for GitHub Desktop deb package
++
++# Update desktop database
++if command -v update-desktop-database > /dev/null 2>&1; then
++    update-desktop-database /usr/share/applications || true
++fi
++
++# Update icon cache
++if command -v gtk-update-icon-cache > /dev/null 2>&1; then
++    gtk-update-icon-cache /usr/share/icons/hicolor || true
++fi
++
++# Update MIME database
++if command -v update-mime-database > /dev/null 2>&1; then
++    update-mime-database /usr/share/mime || true
++fi
++
++echo "GitHub Desktop has been installed successfully!"
+diff --git a/script/resources/deb/postrm.sh b/script/resources/deb/postrm.sh
+new file mode 100755
+index 0000000000..648781a061
+--- /dev/null
++++ b/script/resources/deb/postrm.sh
+@@ -0,0 +1,17 @@
++#!/bin/bash
++# Post-removal script for GitHub Desktop deb package
++
++# Update desktop database
++if command -v update-desktop-database > /dev/null 2>&1; then
++    update-desktop-database /usr/share/applications || true
++fi
++
++# Update icon cache
++if command -v gtk-update-icon-cache > /dev/null 2>&1; then
++    gtk-update-icon-cache /usr/share/icons/hicolor || true
++fi
++
++# Update MIME database
++if command -v update-mime-database > /dev/null 2>&1; then
++    update-mime-database /usr/share/mime || true
++fi
+diff --git a/script/resources/rpm/github-desktop.spec b/script/resources/rpm/github-desktop.spec
+new file mode 100644
+index 0000000000..388316f7f5
+--- /dev/null
++++ b/script/resources/rpm/github-desktop.spec
+@@ -0,0 +1,62 @@
++%define _binary_payload w<%= compressionLevel %>.xzdio
++
++%if "%{_host_cpu}" != "%{_target_cpu}"
++%global __strip /bin/true
++%endif
++
++Name: <%= name %>
++Version: <%= version %>
++Release: <%= revision %>%{?dist}
++<% if (description) { print(`Summary: ${description}\n`) }
++%>
++<% if (license) { print(`License: ${license}\n`) }
++if (homepage) { print(`URL: ${homepage}\n`) }
++if (license || homepage) { print('\n') }
++
++%>Requires: <%= requires.join(', ') %>
++AutoReqProv: no
++
++<% if (productDescription) {
++%>%description
++<% print(productDescription)
++print('\n\n\n') }
++
++
++%>%install
++mkdir -p %{buildroot}/usr/
++cp <%= process.platform === 'darwin' ? '-R' : '-r' %> %{_topdir}/BUILD/usr/* %{buildroot}/usr/
++
++
++%files
++/usr/bin/<%= name %>
++/usr/lib/<%= name %>/
++/usr/share/applications/<%= name %>.desktop
++/usr/share/doc/<%= name %>/
++<% if (_.isObject(icon)) {
++  _.forEach(icon, function (path, resolution) {
++    %>/usr/share/icons/hicolor/<%= resolution %>/apps/<%= name %><%= resolution === 'symbolic' ? '-symbolic' : '' %>.<%= ['scalable', 'symbolic'].includes(resolution) ? 'svg' : 'png' %>
++<% }) } else {
++  %>/usr/share/pixmaps/<%= name %>.png
++<% } %>
++
++<% if (pre) {
++  %>%pre
++<% print(pre)
++if (preun || post || postun) print('\n\n\n') }
++
++
++%><% if (preun) {
++  %>%preun
++<% print(preun)
++if (post || postun) print('\n\n\n') }
++
++
++%><% if (post) {
++  %>%post
++<% print(post)
++if (postun) print('\n\n\n') }
++
++
++%><% if (postun) {
++  %>%postun
++<% print(postun) } %>
+diff --git a/script/resources/rpm/post.sh b/script/resources/rpm/post.sh
+new file mode 100755
+index 0000000000..86fee59db3
+--- /dev/null
++++ b/script/resources/rpm/post.sh
+@@ -0,0 +1,19 @@
++#!/bin/bash
++# Post-installation script for GitHub Desktop rpm package
++
++# Update desktop database
++if command -v update-desktop-database > /dev/null 2>&1; then
++    update-desktop-database /usr/share/applications || true
++fi
++
++# Update icon cache
++if command -v gtk-update-icon-cache > /dev/null 2>&1; then
++    gtk-update-icon-cache /usr/share/icons/hicolor || true
++fi
++
++# Update MIME database
++if command -v update-mime-database > /dev/null 2>&1; then
++    update-mime-database /usr/share/mime || true
++fi
++
++echo "GitHub Desktop has been installed successfully!"
+diff --git a/script/resources/rpm/preun.sh b/script/resources/rpm/preun.sh
+new file mode 100755
+index 0000000000..1880ff3a24
+--- /dev/null
++++ b/script/resources/rpm/preun.sh
+@@ -0,0 +1,17 @@
++#!/bin/bash
++# Pre-removal script for GitHub Desktop rpm package
++
++# Update desktop database
++if command -v update-desktop-database > /dev/null 2>&1; then
++    update-desktop-database /usr/share/applications || true
++fi
++
++# Update icon cache
++if command -v gtk-update-icon-cache > /dev/null 2>&1; then
++    gtk-update-icon-cache /usr/share/icons/hicolor || true
++fi
++
++# Update MIME database
++if command -v update-mime-database > /dev/null 2>&1; then
++    update-mime-database /usr/share/mime || true
++fi
+diff --git a/script/test.mjs b/script/test.mjs
+index 611d7a3663..8b0a57655b 100644
+--- a/script/test.mjs
++++ b/script/test.mjs
+@@ -44,9 +44,6 @@ Object.entries(testEnv).forEach(([k, v]) => (process.env[k] = v))
+ const args = [
+   '--disable-warning=ExperimentalWarning',
+   '--experimental-test-module-mocks',
+-  // Allow CJS resolution to find ESM-only packages (e.g. @github/copilot-sdk)
+-  // whose "exports" only declare an "import" condition with no "require" fallback.
+-  '--conditions=import',
+   ...['--import', 'tsx'],
+   ...['--import', './app/test/globals.mts'],
+   ...switchArgs,
+diff --git a/script/tsconfig.json b/script/tsconfig.json
+index f29222eff8..d1272dfb16 100644
+--- a/script/tsconfig.json
++++ b/script/tsconfig.json
+@@ -15,7 +15,9 @@
+     "sourceMap": false,
+     "noEmit": true,
+     "strict": true,
+-    "types": ["node"]
++    "skipLibCheck": true,
++    "types": ["node"],
++    "typeRoots": ["./types", "../node_modules/@types"]
+   },
+   "compileOnSave": false
+ }
+diff --git a/script/types/electron-installer-debian.d.ts b/script/types/electron-installer-debian.d.ts
+new file mode 100644
+index 0000000000..ef134ea935
+--- /dev/null
++++ b/script/types/electron-installer-debian.d.ts
+@@ -0,0 +1,41 @@
++declare module 'electron-installer-debian' {
++  interface IDebianOptions {
++    src: string
++    dest: string
++    arch?: string
++    name?: string
++    productName?: string
++    genericName?: string
++    description?: string
++    productDescription?: string
++    version?: string
++    revision?: string
++    section?: string
++    priority?: string
++    depends?: string[]
++    recommends?: string[]
++    suggests?: string[]
++    enhances?: string[]
++    preDepends?: string[]
++    maintainer?: string
++    homepage?: string
++    bin?: string
++    icon?: string | Record<string, string>
++    categories?: string[]
++    mimeType?: string[]
++    lintianOverrides?: string[]
++    scripts?: {
++      preinst?: string
++      postinst?: string
++      prerm?: string
++      postrm?: string
++    }
++    desktopTemplate?: string
++    compression?: string
++  }
++
++  function installer(options: IDebianOptions): Promise<void>
++  // The package exposes a default export at runtime.
++  // eslint-disable-next-line no-restricted-syntax
++  export default installer
++}
+diff --git a/script/types/electron-installer-redhat.d.ts b/script/types/electron-installer-redhat.d.ts
+new file mode 100644
+index 0000000000..4e423b541a
+--- /dev/null
++++ b/script/types/electron-installer-redhat.d.ts
+@@ -0,0 +1,37 @@
++declare module 'electron-installer-redhat' {
++  interface IRedhatOptions {
++    src: string
++    dest: string
++    arch?: string
++    platform?: string
++    name?: string
++    productName?: string
++    genericName?: string
++    description?: string
++    productDescription?: string
++    version?: string
++    revision?: string
++    license?: string
++    requires?: string[]
++    homepage?: string
++    compressionLevel?: number
++    bin?: string
++    execArguments?: string[]
++    icon?: string | Record<string, string>
++    categories?: string[]
++    mimeType?: string[]
++    scripts?: {
++      pre?: string
++      post?: string
++      preun?: string
++      postun?: string
++    }
++    desktopTemplate?: string
++    specTemplate?: string
++  }
++
++  function installer(options: IRedhatOptions): Promise<void>
++  // The package exposes a default export at runtime.
++  // eslint-disable-next-line no-restricted-syntax
++  export default installer
++}
+diff --git a/vendor/desktop-notifications/tsconfig.json b/vendor/desktop-notifications/tsconfig.json
+index 1ed99edca9..00f528a4e6 100644
+--- a/vendor/desktop-notifications/tsconfig.json
++++ b/vendor/desktop-notifications/tsconfig.json
+@@ -5,6 +5,7 @@
+     "rootDir": "./lib",
+     "types": ["node"],
+     "target": "ES2022",
++    "types": ["node"],
+     "esModuleInterop": true,
+     "resolveJsonModule": true,
+     "importHelpers": true,
+diff --git a/vendor/desktop-trampoline/tsconfig.json b/vendor/desktop-trampoline/tsconfig.json
+index 098f4f0b61..add7b4b912 100644
+--- a/vendor/desktop-trampoline/tsconfig.json
++++ b/vendor/desktop-trampoline/tsconfig.json
+@@ -5,6 +5,7 @@
+     "rootDir": ".",
+     "types": ["node"],
+     "target": "ES2022",
++    "types": ["node"],
+     "esModuleInterop": true,
+     "resolveJsonModule": true,
+     "importHelpers": true,
+diff --git a/vendor/windows-argv-parser/tsconfig.json b/vendor/windows-argv-parser/tsconfig.json
+index 8448cb62bc..d46c6b3d37 100644
+--- a/vendor/windows-argv-parser/tsconfig.json
++++ b/vendor/windows-argv-parser/tsconfig.json
+@@ -5,6 +5,7 @@
+     "rootDir": ".",
+     "types": ["node"],
+     "target": "ES2022",
++    "types": ["node"],
+     "esModuleInterop": true,
+     "resolveJsonModule": true,
+     "importHelpers": true,

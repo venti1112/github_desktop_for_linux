@@ -1,0 +1,295 @@
+name: Build Linux Packages
+
+on:
+  schedule:
+    # 每天 UTC 06:00（北京时间 14:00）检查上游新 Release
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: '指定上游版本（留空自动检测最新，如 3.6.8-beta2）'
+        required: false
+        type: string
+      force_rebuild:
+        description: '强制重新构建（即使该版本的 Release 已存在）'
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        description: '创建 GitHub Release'
+        required: false
+        default: true
+        type: boolean
+      dry_run:
+        description: '仅检测上游版本，不构建'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: linux-build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Detect Upstream Release
+    runs-on: ubuntu-26.04
+    outputs:
+      should_build: ${{ steps.detect.outputs.should_build }}
+      create_release: ${{ steps.detect.outputs.create_release }}
+      tag: ${{ steps.detect.outputs.tag }}
+      version: ${{ steps.detect.outputs.version }}
+      name: ${{ steps.detect.outputs.name }}
+      body: ${{ steps.detect.outputs.body }}
+      prerelease: ${{ steps.detect.outputs.prerelease }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect upstream release
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPECIFIED_VERSION: ${{ inputs.upstream_version }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+          CREATE_RELEASE_INPUT: ${{ inputs.create_release }}
+        run: |
+          BASE=$(tr -d '[:space:]' < patches/base.txt)
+          echo "📋 补丁基准: $BASE"
+
+          if [ -n "$SPECIFIED_VERSION" ]; then
+            TAG="release-${SPECIFIED_VERSION}"
+            echo "🎯 使用指定版本: $TAG"
+          else
+            TAG=$(gh api repos/desktop/desktop/releases --jq '.[0].tag_name')
+            echo "🔍 上游最新 Release: $TAG"
+          fi
+
+          if ! gh api "repos/desktop/desktop/releases/tags/${TAG}" > /tmp/upstream-release.json 2>/dev/null; then
+            echo "::error::找不到上游 Release: ${TAG}"
+            exit 1
+          fi
+
+          VERSION="${TAG#release-}"
+          NAME=$(jq -r '.name' /tmp/upstream-release.json)
+          PRERELEASE=$(jq -r '.prerelease' /tmp/upstream-release.json)
+
+          if [ "$BASE" != "$TAG" ]; then
+            echo "⚠️ 补丁基准（$BASE）与目标版本（$TAG）不同，将尝试 3-way 应用补丁"
+          fi
+
+          # create_release 默认 true（schedule 触发时 inputs 为空）
+          if [ -z "$CREATE_RELEASE_INPUT" ]; then
+            CREATE_RELEASE=true
+          else
+            CREATE_RELEASE="$CREATE_RELEASE_INPUT"
+          fi
+
+          # 同一版本的 Release 已存在则跳过，除非 force_rebuild
+          if [ "$FORCE_REBUILD" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "⏭️ Release $TAG 已存在，跳过（用 force_rebuild 强制重建）"
+            SHOULD_BUILD=false
+          else
+            SHOULD_BUILD=true
+          fi
+
+          echo "should_build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
+          echo "create_release=$CREATE_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<UPSTREAM_BODY_EOF"
+            jq -r '.body // ""' /tmp/upstream-release.json
+            echo "UPSTREAM_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## 📦 Upstream Release"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|------|-----|"
+            echo "| Tag | \`$TAG\` |"
+            echo "| 版本 | \`$VERSION\` |"
+            echo "| 名称 | $NAME |"
+            echo "| Pre-release | $PRERELEASE |"
+            echo "| 需要构建 | $SHOULD_BUILD |"
+            echo "| 创建 Release | $CREATE_RELEASE |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: check
+    if: needs.check.outputs.should_build == 'true' && inputs.dry_run != true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-26.04
+          - arch: arm64
+            runner: ubuntu-26.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream source
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          git clone --depth 1 --branch "$UPSTREAM_TAG" \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/desktop/desktop.git work
+          cd work
+          BASE=$(tr -d '[:space:]' < ../patches/base.txt)
+          if [ "$BASE" != "$UPSTREAM_TAG" ]; then
+            echo "📥 拉取补丁基准 $BASE（供 3-way 使用）..."
+            git fetch --depth 1 origin "refs/tags/${BASE}:refs/tags/patch-base"
+          fi
+
+      - name: Apply Linux patches
+        env:
+          UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          cd work
+          BASE=$(tr -d '[:space:]' < ../patches/base.txt)
+          for PATCH in ../patches/*.patch; do
+            echo "📦 应用 $(basename "$PATCH") ..."
+            if ! git apply --3way --whitespace=nowarn "$PATCH"; then
+              CONFLICTS=$(git diff --name-only --diff-filter=U)
+              {
+                echo "## ❌ 补丁应用失败"
+                echo ""
+                echo "上游 \`$UPSTREAM_TAG\` 与补丁基准 \`$BASE\` 冲突（$(basename "$PATCH")），需要刷新补丁。"
+                echo ""
+                echo "### 冲突文件"
+                echo ""
+                if [ -n "$CONFLICTS" ]; then
+                  echo "$CONFLICTS" | sed -e 's/^/- `/' -e 's/$/`/'
+                else
+                  echo "（未检测到未合并文件，请查看本步骤日志）"
+                fi
+                echo ""
+                echo "### 本地刷新步骤"
+                echo ""
+                echo '```bash'
+                echo "git clone --depth 1 --branch $UPSTREAM_TAG --recurse-submodules --shallow-submodules \\"
+                echo "  https://github.com/desktop/desktop.git refresh"
+                echo "cd refresh"
+                echo "git fetch --depth 1 origin refs/tags/$BASE:refs/tags/patch-base"
+                echo "for p in <repo>/patches/*.patch; do git apply --3way \"\$p\"; done"
+                echo "# 手动解决冲突后，分别重新生成两个补丁并更新基准："
+                echo "git add -A"
+                echo "git diff --binary --cached HEAD -- . ':(exclude)app/static/linux/logos' > <repo>/patches/0001-linux-code.patch"
+                echo "git diff --binary --cached HEAD -- app/static/linux/logos > <repo>/patches/0002-linux-assets.patch"
+                echo "echo $UPSTREAM_TAG > <repo>/patches/base.txt"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::$(basename "$PATCH") 无法应用到 $UPSTREAM_TAG（基准 $BASE），详见 Step Summary 的刷新指引。"
+              exit 1
+            fi
+          done
+          echo "✅ 全部补丁应用成功（基准 $BASE → 目标 $UPSTREAM_TAG）"
+
+      - name: Install dependencies
+        working-directory: work
+        run: yarn install
+
+      - name: Build production app
+        working-directory: work
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: yarn build:prod
+
+      - name: Install system packaging dependencies
+        run: sudo apt-get update && sudo apt-get install -y zstd libarchive-tools
+
+      - name: Package all formats
+        working-directory: work
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: yarn package
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-deb-${{ matrix.arch }}
+          path: work/dist/*.deb
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload rpm
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-rpm-${{ matrix.arch }}
+          path: work/dist/*.rpm
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload Arch Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-arch-${{ matrix.arch }}
+          path: work/dist/*.pkg.tar.zst
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-AppImage-${{ matrix.arch }}
+          path: work/dist/*.AppImage
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-tarball-${{ matrix.arch }}
+          path: work/dist/*.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: [check, build]
+    if: needs.check.outputs.should_build == 'true' && needs.check.outputs.create_release == 'true'
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: GitHubDesktop-Linux-*
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS.txt
+        run: |
+          cd artifacts
+          sha256sum * > /tmp/SHA256SUMS.txt
+          mv /tmp/SHA256SUMS.txt .
+          cat SHA256SUMS.txt
+
+      - name: Write release body
+        env:
+          BODY: ${{ needs.check.outputs.body }}
+        run: printf '%s' "$BODY" > "$RUNNER_TEMP/release_body.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: ${{ needs.check.outputs.name }}
+          body_path: ${{ runner.temp }}/release_body.txt
+          files: artifacts/*
+          draft: false
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
