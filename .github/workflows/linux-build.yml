@@ -1,14 +1,13 @@
 name: Build Linux Packages
 
+run-name: Build Linux ${{ inputs.upstream_version }}
+
 on:
-  schedule:
-    # 每天 UTC 06:00（北京时间 14:00）检查上游新 Release
-    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       upstream_version:
-        description: '指定上游版本（留空自动检测最新，如 3.6.8-beta2）'
-        required: false
+        description: '上游版本（必填，如 3.6.8-beta2）'
+        required: true
         type: string
       force_rebuild:
         description: '强制重新构建（即使该版本的 Release 已存在）'
@@ -29,6 +28,8 @@ on:
 concurrency:
   group: linux-build
   cancel-in-progress: false
+  # 缺口补齐会一次派发多个版本；允许它们按 FIFO 排队，而不是互相取消。
+  queue: max
 
 permissions:
   contents: write
@@ -60,13 +61,16 @@ jobs:
           BASE=$(tr -d '[:space:]' < patches/base.txt)
           echo "📋 补丁基准: $BASE"
 
-          if [ -n "$SPECIFIED_VERSION" ]; then
-            TAG="release-${SPECIFIED_VERSION}"
-            echo "🎯 使用指定版本: $TAG"
-          else
-            TAG=$(gh api repos/desktop/desktop/releases --jq '.[0].tag_name')
-            echo "🔍 上游最新 Release: $TAG"
+          VERSION=$(printf '%s' "$SPECIFIED_VERSION" | tr -d '[:space:]')
+          VERSION="${VERSION#release-}"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::上游版本格式无效: ${SPECIFIED_VERSION}（示例: 3.6.8-beta2）"
+            exit 1
           fi
+
+          TAG="release-${VERSION}"
+          echo "🎯 目标版本: $TAG"
 
           if ! gh api "repos/desktop/desktop/releases/tags/${TAG}" > /tmp/upstream-release.json 2>/dev/null; then
             echo "::error::找不到上游 Release: ${TAG}"
@@ -81,12 +85,7 @@ jobs:
             echo "⚠️ 补丁基准（$BASE）与目标版本（$TAG）不同，将尝试 3-way 应用补丁"
           fi
 
-          # create_release 默认 true（schedule 触发时 inputs 为空）
-          if [ -z "$CREATE_RELEASE_INPUT" ]; then
-            CREATE_RELEASE=true
-          else
-            CREATE_RELEASE="$CREATE_RELEASE_INPUT"
-          fi
+          CREATE_RELEASE="${CREATE_RELEASE_INPUT:-true}"
 
           # 同一版本的 Release 已存在则跳过，除非 force_rebuild
           if [ "$FORCE_REBUILD" != "true" ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
@@ -283,7 +282,7 @@ jobs:
   release:
     name: Create Release
     needs: [check, build]
-    if: needs.check.outputs.should_build == 'true' && needs.check.outputs.create_release == 'true'
+    if: needs.check.outputs.should_build == 'true' && needs.check.outputs.create_release == 'true' && inputs.dry_run != true
     runs-on: ubuntu-26.04
     steps:
       - name: Download all artifacts

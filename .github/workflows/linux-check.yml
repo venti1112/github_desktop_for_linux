@@ -1,0 +1,149 @@
+name: Check and Dispatch Linux Builds
+
+on:
+  schedule:
+    # 每天 UTC 06:00（北京时间 14:00）检查上游新 Release
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '仅列出待构建版本，不派发构建'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: linux-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  check:
+    name: Find missing releases
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test release gap logic
+        run: node --test tools/find-missing-releases.test.mjs
+
+      - name: Fetch releases and active builds
+        run: |
+          set -euo pipefail
+
+          fetch_releases() {
+            local repo="$1"
+            local output="$2"
+
+            gh api --paginate "repos/${repo}/releases?per_page=100" > "${output}.pages.json"
+            jq -s 'add // []' "${output}.pages.json" > "$output"
+            rm -f "${output}.pages.json"
+          }
+
+          fetch_releases desktop/desktop "$RUNNER_TEMP/upstream-releases.json"
+          fetch_releases "$GITHUB_REPOSITORY" "$RUNNER_TEMP/local-releases.json"
+
+          gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow linux-build.yml \
+            --limit 100 \
+            --json displayTitle,status \
+            > "$RUNNER_TEMP/build-runs.json"
+
+          jq '[.[]
+            | select(.status != "completed")
+            | (.displayTitle // "")
+            | select(startswith("Build Linux "))
+            | sub("^Build Linux "; "")
+            | sub("^release-"; "")
+          ] | unique' "$RUNNER_TEMP/build-runs.json" > "$RUNNER_TEMP/active-versions.json"
+
+      - name: Find missing releases
+        id: find
+        run: |
+          set -euo pipefail
+
+          node tools/find-missing-releases.mjs \
+            --upstream "$RUNNER_TEMP/upstream-releases.json" \
+            --local "$RUNNER_TEMP/local-releases.json" \
+            --active "$RUNNER_TEMP/active-versions.json" \
+            --json > "$RUNNER_TEMP/missing-releases.json"
+
+          LATEST=$(jq -r '.latest // "（无）"' "$RUNNER_TEMP/missing-releases.json")
+          STOP_AT=$(jq -r '.stopAt // "（未找到）"' "$RUNNER_TEMP/missing-releases.json")
+          TOTAL_UPSTREAM=$(jq -r '.totalUpstream' "$RUNNER_TEMP/missing-releases.json")
+          MISSING_COUNT=$(jq -r '.missing | length' "$RUNNER_TEMP/missing-releases.json")
+          SKIPPED_COUNT=$(jq -r '.skippedActive | length' "$RUNNER_TEMP/missing-releases.json")
+          WARNING=$(jq -r '.warning // empty' "$RUNNER_TEMP/missing-releases.json")
+
+          echo "missing_count=$MISSING_COUNT" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## 🐧 Linux 构建检查"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| 上游最新版本 | \`$LATEST\` |"
+            echo "| 本地停止版本 | \`$STOP_AT\` |"
+            echo "| 上游 Release 数 | $TOTAL_UPSTREAM |"
+            echo "| 待构建版本数 | $MISSING_COUNT |"
+            echo "| 已在构建中 | $SKIPPED_COUNT |"
+            echo ""
+
+            if [ "$MISSING_COUNT" -gt 0 ]; then
+              echo "### 待构建（旧 → 新）"
+              echo ""
+              jq -r '.missing[] | "- `\(.)`"' "$RUNNER_TEMP/missing-releases.json"
+            else
+              echo "✅ 没有缺失版本。"
+            fi
+
+            if [ "$SKIPPED_COUNT" -gt 0 ]; then
+              echo ""
+              echo "### 已在构建中，跳过"
+              echo ""
+              jq -r '.skippedActive[] | "- `\(.)`"' "$RUNNER_TEMP/missing-releases.json"
+            fi
+
+            if [ -n "$WARNING" ]; then
+              echo ""
+              echo "> ⚠️ $WARNING"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry run notice
+        if: inputs.dry_run == true
+        run: echo 'ℹ️ dry_run=true，未派发构建。' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dispatch builds
+        if: inputs.dry_run != true && steps.find.outputs.missing_count != '0'
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t VERSIONS < <(jq -r '.missing[]' "$RUNNER_TEMP/missing-releases.json")
+
+          {
+            echo ""
+            echo "### 已派发构建（旧 → 新）"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for VERSION in "${VERSIONS[@]}"; do
+            echo "🚀 派发构建: $VERSION"
+            gh workflow run linux-build.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$DEFAULT_BRANCH" \
+              -f upstream_version="$VERSION" \
+              -f create_release=true \
+              -f dry_run=false
+            echo "- ✅ \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+          done

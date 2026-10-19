@@ -7,21 +7,36 @@
 本仓库只含 Linux 支持相关的增量内容，不含完整源码：
 
 ```
-.github/workflows/linux-build.yml   # 检测上游 → 下载源码 → 应用定制 → 构建 → 发布
+.github/workflows/linux-check.yml   # 定时/手动检查缺口 → 派发构建
+.github/workflows/linux-build.yml   # 构建单个指定版本（也支持手动触发）
 patches/0001-linux-code.patch       # 对上游已有文件的修改
 patches/package-extras.json         # package.json 的增量（依赖、scripts、resolutions）
 patches/base.txt                    # 补丁基准的上游 tag（生成补丁时的“共同父提交”）
 overlay/                            # 新增文件（打包脚本、图标、更新检查器等），原样复制进源码树
-tools/                              # overlay / extras 的应用与补丁刷新工具
+tools/                              # overlay / extras / 缺口计算与补丁刷新工具
 README.md
 LICENSE
 ```
 
 ## 工作原理
 
-工作流每天 UTC 06:00（北京时间 14:00）检查上游新 Release：
+构建拆成“检查缺口”和“构建单个版本”两个 workflow。
 
-1. 确定目标版本（上游最新 Release，或手动指定），目标已发布过则跳过；
+### 检查缺口（`linux-check.yml`）
+
+每天 UTC 06:00（北京时间 14:00）或手动运行：
+
+1. 拉取本仓库与上游 `desktop/desktop` 的全部非 draft Release；
+2. 按 `published_at` 从新到旧建立上游时间线（不能直接使用 API 默认的 `created_at` 顺序，否则 stable 可能排在 beta 后面）；
+3. 从最新版本向前遍历，遇到本仓库已有的 Release 就停止，途中收集到的就是缺失版本；
+4. 把缺失版本反转成“旧 → 新”，逐个触发 `linux-build.yml`；
+5. 本仓库还没有任何 Release 时，会把全部历史版本列为缺口；建议先手动构建一个版本作为停止点。
+
+检查 workflow 使用 `GITHUB_TOKEN` 派发构建（需要 `actions: write`），不需要额外的 PAT。多个构建任务通过 `queue: max` 按 FIFO 串行排队。
+
+### 构建单个版本（`linux-build.yml`）
+
+1. 接收一个明确的上游版本（检查 workflow 传入选定版本，也可以手动填写），目标已发布过则跳过；
 2. 浅克隆上游对应 tag（含子模块）；
 3. 应用 Linux 定制：
    - `tools/apply-overlay.mjs` 把 `overlay/` 中的新增文件复制进源码树（上游已存在同名文件时明确失败，不静默覆盖）；
@@ -54,14 +69,34 @@ Linux 构建内置更新检查器，只查询本仓库的 Releases，不会自�
 
 ## 手动触发
 
+### 检查并补齐缺口
+
+Actions → **Check and Dispatch Linux Builds** → Run workflow：
+
+| 参数 | 说明 |
+| --- | --- |
+| `dry_run` | 只计算并列出待构建版本，不派发构建 |
+
+该 workflow 也会每天自动运行。它只派发缺口版本，不会重复构建已有 Release。首次使用或想预览时，建议先勾选 `dry_run`。
+
+### 手动构建单个版本
+
 Actions → **Build Linux Packages** → Run workflow：
 
 | 参数 | 说明 |
 | --- | --- |
-| `upstream_version` | 指定上游版本（如 `3.6.8-beta2`），留空自动检测最新 |
+| `upstream_version` | 必填，上游版本（如 `3.6.8-beta2`），也可以带 `release-` 前缀 |
 | `force_rebuild` | 该版本 Release 已存在时也重新构建 |
 | `create_release` | 是否创建 Release（关闭则只上传 Actions artifacts） |
-| `dry_run` | 仅检测上游版本，不构建 |
+| `dry_run` | 仅检查上游 Release 和本地是否已发布，不构建 |
+
+多个由检查 workflow 派发的构建会按 `queue: max` 的 FIFO 队列串行执行，避免并发构建互相干扰。
+
+本地验证缺口计算：
+
+```bash
+node --test tools/find-missing-releases.test.mjs
+```
 
 ## 刷新补丁
 
