@@ -27,10 +27,12 @@ LICENSE
 每天 UTC 06:00（北京时间 14:00）或手动运行：
 
 1. 拉取本仓库与上游 `desktop/desktop` 的全部非 draft Release；
-2. 按 `published_at` 从新到旧建立上游时间线（不能直接使用 API 默认的 `created_at` 顺序，否则 stable 可能排在 beta 后面）；
-3. 从最新版本向前遍历，遇到本仓库已有的 Release 就停止，途中收集到的就是缺失版本；
-4. 把缺失版本反转成“旧 → 新”，逐个触发 `linux-build.yml`；
+2. 同时建立两条时间线：按 `published_at` 从新到旧，以及按 semver 从高到低；
+3. 两条时间线各自从最新版本向前遍历，遇到本仓库已有的 Release 就停止，途中收集到的版本取并集；
+4. 把缺口按发布时间反转成“旧 → 新”，逐个触发 `linux-build.yml`；
 5. 本仓库还没有任何 Release 时，会把全部历史版本列为缺口；建议先手动构建一个版本作为停止点。
+
+只按发布时间扫描会漏掉“semver 更高但发布更早”的 beta（例如本地有 `3.6.7` 时，`3.6.8-beta2` 仍应算缺口）；只按 semver 扫描又会漏掉“发布晚于 beta 的 stable”。两条时间线取并集可以同时覆盖这两种情况。
 
 检查 workflow 使用 `GITHUB_TOKEN` 派发构建（需要 `actions: write`），不需要额外的 PAT。多个构建任务通过 `queue: max` 按 FIFO 串行排队。
 

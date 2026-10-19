@@ -77,7 +77,10 @@ jobs:
             --json > "$RUNNER_TEMP/missing-releases.json"
 
           LATEST=$(jq -r '.latest // "（无）"' "$RUNNER_TEMP/missing-releases.json")
+          LATEST_STABLE=$(jq -r '.latestStable // "（无）"' "$RUNNER_TEMP/missing-releases.json")
+          LATEST_PRERELEASE=$(jq -r '.latestPrerelease // "（无）"' "$RUNNER_TEMP/missing-releases.json")
           STOP_AT=$(jq -r '.stopAt // "（未找到）"' "$RUNNER_TEMP/missing-releases.json")
+          SEMVER_STOP_AT=$(jq -r '.semverStopAt // "（未找到）"' "$RUNNER_TEMP/missing-releases.json")
           TOTAL_UPSTREAM=$(jq -r '.totalUpstream' "$RUNNER_TEMP/missing-releases.json")
           MISSING_COUNT=$(jq -r '.missing | length' "$RUNNER_TEMP/missing-releases.json")
           SKIPPED_COUNT=$(jq -r '.skippedActive | length' "$RUNNER_TEMP/missing-releases.json")
@@ -90,8 +93,11 @@ jobs:
             echo ""
             echo "| 项目 | 值 |"
             echo "| --- | --- |"
-            echo "| 上游最新版本 | \`$LATEST\` |"
-            echo "| 本地停止版本 | \`$STOP_AT\` |"
+            echo "| 上游最新发布（按时间） | \`$LATEST\` |"
+            echo "| 上游最新正式版 | \`$LATEST_STABLE\` |"
+            echo "| 上游最新预发布 | \`$LATEST_PRERELEASE\` |"
+            echo "| 本地停止版本（发布时间线） | \`$STOP_AT\` |"
+            echo "| 本地停止版本（semver） | \`$SEMVER_STOP_AT\` |"
             echo "| 上游 Release 数 | $TOTAL_UPSTREAM |"
             echo "| 待构建版本数 | $MISSING_COUNT |"
             echo "| 已在构建中 | $SKIPPED_COUNT |"

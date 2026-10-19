@@ -3,14 +3,16 @@
 /**
  * 计算需要补构建的上游版本。
  *
- * 规则按发布时间线，而不是 GitHub API 默认的 created_at 顺序：
- * 1. 取上游所有非 draft Release，按 published_at 从新到旧排列；
- * 2. 从最新版本开始向前遍历，遇到本仓库已有的版本就停止；
- * 3. 遍历途中收集到的版本就是缺口，反转后按旧到新输出。
+ * 上游 Release 有两种容易互相矛盾的顺序：
+ * - GitHub API 默认按 created_at；stable 的发布时间也可能晚于同版本的 beta；
+ * - semver 顺序中，3.6.8-beta2 又高于 3.6.7。
  *
- * 之所以必须按 published_at 排序：上游 stable 的发布时间可能晚于同版本的
- * beta。例如 3.6.7 发布于 3.6.8-beta2 之后，如果直接使用 API 顺序，
- * 循环会先遇到 beta2 并停止，从而漏掉 3.6.7。
+ * 只按其中一种顺序扫描都会漏版本，因此这里同时扫描两条时间线：
+ * 1. 按 published_at 从新到旧：捕捉发布晚于 beta 的 stable；
+ * 2. 按 semver 从高到低：捕捉 semver 更高但发布更早的 beta。
+ *
+ * 每条时间线都从最新开始，遇到本仓库已有的版本就停止；两边收集到的缺口
+ * 取并集，再按发布时间从旧到新输出。
  *
  * 用法:
  *   node tools/find-missing-releases.mjs \
@@ -48,6 +50,79 @@ export function getReleaseVersion(tagName) {
   return SEMVER_PATTERN.test(version) ? version : null
 }
 
+function parseSemver(version) {
+  const withoutBuild = version.split('+')[0]
+  const dashIndex = withoutBuild.indexOf('-')
+  const core =
+    dashIndex === -1 ? withoutBuild : withoutBuild.slice(0, dashIndex)
+  const prerelease =
+    dashIndex === -1 ? [] : withoutBuild.slice(dashIndex + 1).split('.')
+
+  return {
+    core: core.split('.').map(part => Number(part)),
+    prerelease,
+  }
+}
+
+/**
+ * 比较两个 semver 版本（忽略 build metadata）。
+ *
+ * 这里只需要处理上游实际使用的 `X.Y.Z[-pre]`，所以不引入 semver 依赖。
+ */
+export function compareSemver(leftVersion, rightVersion) {
+  const left = parseSemver(leftVersion)
+  const right = parseSemver(rightVersion)
+
+  for (let index = 0; index < 3; index++) {
+    if (left.core[index] !== right.core[index]) {
+      return left.core[index] - right.core[index]
+    }
+  }
+
+  if (left.prerelease.length === 0 && right.prerelease.length === 0) {
+    return 0
+  }
+  if (left.prerelease.length === 0) {
+    return 1
+  }
+  if (right.prerelease.length === 0) {
+    return -1
+  }
+
+  const length = Math.max(left.prerelease.length, right.prerelease.length)
+
+  for (let index = 0; index < length; index++) {
+    const leftPart = left.prerelease[index]
+    const rightPart = right.prerelease[index]
+
+    if (leftPart === undefined) {
+      return -1
+    }
+    if (rightPart === undefined) {
+      return 1
+    }
+
+    const leftNumeric = /^\d+$/.test(leftPart)
+    const rightNumeric = /^\d+$/.test(rightPart)
+
+    if (leftNumeric && rightNumeric) {
+      const difference = Number(leftPart) - Number(rightPart)
+
+      if (difference !== 0) {
+        return difference
+      }
+    } else if (leftNumeric) {
+      return -1
+    } else if (rightNumeric) {
+      return 1
+    } else if (leftPart !== rightPart) {
+      return leftPart < rightPart ? -1 : 1
+    }
+  }
+
+  return 0
+}
+
 function parseTimestamp(value) {
   const timestamp = Date.parse(value ?? '')
   return Number.isFinite(timestamp) ? timestamp : 0
@@ -73,6 +148,8 @@ function toTimelineEntry(release, index) {
     publishedAt,
     publishedTimestamp: parseTimestamp(publishedAt),
     createdTimestamp: parseTimestamp(createdAt),
+    prerelease:
+      release.prerelease === true || parseSemver(version).prerelease.length > 0,
     index,
   }
 }
@@ -83,7 +160,7 @@ function toTimelineEntry(release, index) {
  * 同一天可能有多个 Release，tie-break 使用 created_at 和 API 原始顺序。
  * Node 的 Array#sort 是稳定排序，因此最终结果可重复。
  */
-export function buildUpstreamTimeline(releases) {
+function buildUpstreamEntries(releases) {
   const timeline = []
 
   for (const [index, release] of (releases ?? []).entries()) {
@@ -111,11 +188,17 @@ export function buildUpstreamTimeline(releases) {
     }
   }
 
-  return unique.map(({ version, tag, publishedAt }) => ({
-    version,
-    tag,
-    publishedAt,
-  }))
+  return unique
+}
+
+export function buildUpstreamTimeline(releases) {
+  return buildUpstreamEntries(releases).map(
+    ({ version, tag, publishedAt }) => ({
+      version,
+      tag,
+      publishedAt,
+    })
+  )
 }
 
 function getLocalVersions(releases) {
@@ -153,7 +236,7 @@ function getActiveVersions(versions) {
 /**
  * 计算从上游最新版本到本仓库最近已构建版本之间的缺口。
  *
- * 返回值中的 missing 已经按旧 → 新排序，可直接按顺序触发构建。
+ * 返回值中的 missing 已经按发布时间从旧 → 新排序，可直接按顺序触发构建。
  * activeVersions 只影响是否派发，不影响停止点：正在构建但尚未发布的版本
  * 仍会被视为缺口。
  */
@@ -162,30 +245,55 @@ export function findMissingReleases({
   localReleases = [],
   activeVersions = [],
 } = {}) {
-  const timeline = buildUpstreamTimeline(upstreamReleases)
+  const timeline = buildUpstreamEntries(upstreamReleases)
   const local = getLocalVersions(localReleases)
   const active = getActiveVersions(activeVersions)
 
-  const collected = []
-  let stopEntry = null
+  const collectGap = entries => {
+    const gap = []
 
-  for (const entry of timeline) {
-    if (local.has(entry.version)) {
-      stopEntry = entry
-      break
+    for (const entry of entries) {
+      if (local.has(entry.version)) {
+        break
+      }
+
+      gap.push(entry)
     }
 
-    collected.push(entry)
+    return gap
   }
 
-  const missingNewestFirst = []
-  const skippedActiveNewestFirst = []
+  const publicationGap = collectGap(timeline)
+  const semverTimeline = [...timeline].sort((a, b) =>
+    compareSemver(b.version, a.version)
+  )
+  const semverGap = collectGap(semverTimeline)
 
-  for (const entry of collected) {
+  const publicationStop =
+    timeline.find(entry => local.has(entry.version)) ?? null
+  const semverStop =
+    semverTimeline.find(entry => local.has(entry.version)) ?? null
+
+  // 两条时间线各自都有盲区，缺口取并集。
+  const gapByVersion = new Map()
+
+  for (const entry of [...publicationGap, ...semverGap]) {
+    gapByVersion.set(entry.version, entry)
+  }
+
+  const missing = []
+  const skippedActive = []
+
+  // 按发布时间从旧到新输出；timeline 是从新到旧。
+  for (const entry of [...timeline].reverse()) {
+    if (!gapByVersion.has(entry.version)) {
+      continue
+    }
+
     if (active.has(entry.version)) {
-      skippedActiveNewestFirst.push(entry.version)
+      skippedActive.push(entry.version)
     } else {
-      missingNewestFirst.push(entry.version)
+      missing.push(entry.version)
     }
   }
 
@@ -195,21 +303,29 @@ export function findMissingReleases({
     warning = '上游没有可用的非 draft Release。'
   } else if (local.size === 0) {
     warning = `本仓库还没有 Release，将构建全部 ${timeline.length} 个上游版本。`
-  } else if (stopEntry === null) {
+  } else if (publicationStop === null && semverStop === null) {
     warning = '本仓库的 Release 不在上游时间线中，无法确定停止点；将构建全部上游版本。'
   }
+
+  const latestStable =
+    semverTimeline.find(entry => !entry.prerelease)?.version ?? null
+  const latestPrerelease =
+    semverTimeline.find(entry => entry.prerelease)?.version ?? null
 
   return {
     latest: timeline[0]?.version ?? null,
     latestTag: timeline[0]?.tag ?? null,
     latestPublishedAt: timeline[0]?.publishedAt ?? null,
-    stopAt: stopEntry?.version ?? null,
-    stopAtTag: stopEntry?.tag ?? null,
-    stopAtPublishedAt: stopEntry?.publishedAt ?? null,
+    latestStable,
+    latestPrerelease,
+    stopAt: publicationStop?.version ?? null,
+    stopAtTag: publicationStop?.tag ?? null,
+    stopAtPublishedAt: publicationStop?.publishedAt ?? null,
+    semverStopAt: semverStop?.version ?? null,
     totalUpstream: timeline.length,
     localVersionCount: local.size,
-    missing: missingNewestFirst.reverse(),
-    skippedActive: skippedActiveNewestFirst.reverse(),
+    missing,
+    skippedActive,
     warning,
   }
 }
@@ -282,8 +398,11 @@ function parseArgs(argv) {
 
 function printHuman(result) {
   const lines = [
-    `上游最新版本: ${result.latest ?? '（无）'}`,
-    `本地停止版本: ${result.stopAt ?? '（未找到）'}`,
+    `上游最新发布（按时间）: ${result.latest ?? '（无）'}`,
+    `上游最新正式版: ${result.latestStable ?? '（无）'}`,
+    `上游最新预发布: ${result.latestPrerelease ?? '（无）'}`,
+    `本地停止版本（发布时间线）: ${result.stopAt ?? '（未找到）'}`,
+    `本地停止版本（semver）: ${result.semverStopAt ?? '（未找到）'}`,
     `上游 Release 数: ${result.totalUpstream}`,
     `本次缺口 (${result.missing.length}):`,
   ]

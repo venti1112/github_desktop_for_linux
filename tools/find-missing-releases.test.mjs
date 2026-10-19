@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildUpstreamTimeline,
+  compareSemver,
   findMissingReleases,
   getReleaseVersion,
 } from './find-missing-releases.mjs'
@@ -42,6 +43,53 @@ test('时间线按 published_at 排序，而不是 API 的 created_at 顺序', (
   )
 })
 
+test('compareSemver 正确比较正式版和预发布版', () => {
+  assert.ok(compareSemver('3.6.8-beta2', '3.6.8-beta1') > 0)
+  assert.ok(compareSemver('3.6.8', '3.6.8-beta2') > 0)
+  assert.ok(compareSemver('3.6.8-beta2', '3.6.7') > 0)
+  assert.ok(compareSemver('3.6.7', '3.6.7-beta3') > 0)
+  assert.equal(compareSemver('3.6.7+build.1', '3.6.7+build.2'), 0)
+  assert.ok(compareSemver('3.6.7-beta.2', '3.6.7-beta.10') < 0)
+})
+
+test('本地只有 3.6.7 时，semver 更高的 beta 也会被检测为缺口', () => {
+  const result = findMissingReleases({
+    upstreamReleases: [
+      release('3.6.8-beta2', '2026-10-13T16:37:28Z'),
+      release('3.6.8-beta1', '2026-10-13T11:41:07Z'),
+      release('3.6.7', '2026-10-14T07:59:58Z'),
+    ],
+    localReleases: [
+      release('3.6.7', '2026-10-14T07:59:58Z'),
+    ],
+  })
+
+  assert.equal(result.latest, '3.6.7')
+  assert.equal(result.latestStable, '3.6.7')
+  assert.equal(result.latestPrerelease, '3.6.8-beta2')
+  assert.equal(result.stopAt, '3.6.7')
+  assert.equal(result.semverStopAt, '3.6.7')
+  assert.deepEqual(result.missing, ['3.6.8-beta1', '3.6.8-beta2'])
+})
+
+test('只有 beta2 被删除时，只补 beta2', () => {
+  const result = findMissingReleases({
+    upstreamReleases: [
+      release('3.6.8-beta2', '2026-10-13T16:37:28Z'),
+      release('3.6.8-beta1', '2026-10-13T11:41:07Z'),
+      release('3.6.7', '2026-10-14T07:59:58Z'),
+    ],
+    localReleases: [
+      release('3.6.7', '2026-10-14T07:59:58Z'),
+      release('3.6.8-beta1', '2026-10-13T11:41:07Z'),
+    ],
+  })
+
+  assert.equal(result.stopAt, '3.6.7')
+  assert.equal(result.semverStopAt, '3.6.8-beta1')
+  assert.deepEqual(result.missing, ['3.6.8-beta2'])
+})
+
 test('本仓库只有 beta2 时，能正确补 stable 3.6.7', () => {
   const result = findMissingReleases({
     upstreamReleases: [
@@ -73,6 +121,7 @@ test('最新版本已经在本地时没有缺口', () => {
 
   assert.equal(result.latest, '3.6.7')
   assert.equal(result.stopAt, '3.6.7')
+  assert.equal(result.semverStopAt, '3.6.8-beta2')
   assert.deepEqual(result.missing, [])
 })
 
