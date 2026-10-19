@@ -2,7 +2,7 @@
 
 从上游 [desktop/desktop](https://github.com/desktop/desktop) 源码 + 本地补丁自动构建 GitHub Desktop 的 Linux 安装包。
 
-支持格式：**deb / rpm / Arch Linux (pkg.tar.zst) / AppImage / tar.gz**，覆盖 **x64** 与 **arm64**。
+支持格式：**deb / rpm / Arch Linux (pkg.tar.zst) / AppImage / tar.gz**，覆盖 **x64** 与 **arm64**；x64 额外附上打补丁后的完整源码包。
 
 本仓库只含 Linux 支持相关的增量内容，不含完整源码：
 
@@ -27,8 +27,9 @@ LICENSE
    - `tools/apply-overlay.mjs` 把 `overlay/` 中的新增文件复制进源码树（上游已存在同名文件时明确失败，不静默覆盖）；
    - `tools/apply-package-extras.mjs` 把 `patches/package-extras.json` 合并进 `package.json`（结构化合并，与上游版本无关）；
    - `patches/*.patch` 以 `git apply --3way` 重放，上游与补丁不重叠的改动会被自动吸收；真正冲突时任务失败，并在 Step Summary 中列出冲突文件和刷新步骤；
-4. `yarn install && yarn build:prod && yarn package`，产出全部安装包；
-5. 创建与上游同名的 Release（tag 与上游一致），并附上 `SHA256SUMS.txt`。
+4. x64 额外把打补丁后的完整源码打包为 `GitHubDesktop-Linux-source-<version>.tar.gz`（排除 `.git`、`node_modules` 与构建产物；arm64 不重复上传）；
+5. `yarn install && yarn build:prod && yarn package`，产出全部安装包；
+6. 创建与上游同名的 Release（tag 与上游一致）。Release 里各文件的 SHA256 由 GitHub 自动计算并显示。
 
 ## 目录约定
 

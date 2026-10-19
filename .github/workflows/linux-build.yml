@@ -197,6 +197,18 @@ jobs:
           done
           echo "✅ 全部补丁应用成功（基准 $BASE → 目标 $UPSTREAM_TAG）"
 
+      # 打补丁后的完整源码，只需打包一次（x64），arm64 不重复上传
+      - name: Package patched source
+        if: matrix.arch == 'x64'
+        working-directory: work
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          tar --exclude=.git --exclude=node_modules --exclude=dist --exclude=out \
+            --transform "s,^\.,github-desktop-linux-${VERSION}," \
+            -czf "../GitHubDesktop-Linux-source-${VERSION}.tar.gz" -C . .
+          ls -lh "../GitHubDesktop-Linux-source-${VERSION}.tar.gz"
+
       - name: Install dependencies
         working-directory: work
         run: yarn install
@@ -259,6 +271,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Upload patched source
+        if: matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GitHubDesktop-Linux-source
+          path: GitHubDesktop-Linux-source-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
   release:
     name: Create Release
     needs: [check, build]
@@ -271,13 +292,6 @@ jobs:
           path: artifacts
           pattern: GitHubDesktop-Linux-*
           merge-multiple: true
-
-      - name: Generate SHA256SUMS.txt
-        run: |
-          cd artifacts
-          sha256sum * > /tmp/SHA256SUMS.txt
-          mv /tmp/SHA256SUMS.txt .
-          cat SHA256SUMS.txt
 
       - name: Write release body
         env:
