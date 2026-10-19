@@ -4,13 +4,15 @@
 
 支持格式：**deb / rpm / Arch Linux (pkg.tar.zst) / AppImage / tar.gz**，覆盖 **x64** 与 **arm64**。
 
-本仓库只含 Linux 支持补丁，不含完整源码：
+本仓库只含 Linux 支持相关的增量内容，不含完整源码：
 
 ```
-.github/workflows/linux-build.yml   # 检测上游 → 下载源码 → 打补丁 → 构建 → 发布
-patches/0001-linux-code.patch       # 代码类定制（打包脚本、Linux 修复）
-patches/0002-linux-assets.patch     # 二进制资源（应用图标 6 张 PNG）
+.github/workflows/linux-build.yml   # 检测上游 → 下载源码 → 应用定制 → 构建 → 发布
+patches/0001-linux-code.patch       # 对上游已有文件的修改
+patches/package-extras.json         # package.json 的增量（依赖、scripts、resolutions）
 patches/base.txt                    # 补丁基准的上游 tag（生成补丁时的“共同父提交”）
+overlay/                            # 新增文件（打包脚本、图标），原样复制进源码树
+tools/                              # overlay / extras 的应用与补丁刷新工具
 README.md
 LICENSE
 ```
@@ -21,9 +23,22 @@ LICENSE
 
 1. 确定目标版本（上游最新 Release，或手动指定），目标已发布过则跳过；
 2. 浅克隆上游对应 tag（含子模块）；
-3. 应用 `patches/*.patch`（代码补丁 + 资源补丁）。上游与补丁不重叠的改动会被 3-way 自动吸收；真正冲突时任务失败，并在 Step Summary 中列出冲突文件和刷新步骤；
+3. 应用 Linux 定制：
+   - `tools/apply-overlay.mjs` 把 `overlay/` 中的新增文件复制进源码树（上游已存在同名文件时明确失败，不静默覆盖）；
+   - `tools/apply-package-extras.mjs` 把 `patches/package-extras.json` 合并进 `package.json`（结构化合并，与上游版本无关）；
+   - `patches/*.patch` 以 `git apply --3way` 重放，上游与补丁不重叠的改动会被自动吸收；真正冲突时任务失败，并在 Step Summary 中列出冲突文件和刷新步骤；
 4. `yarn install && yarn build:prod && yarn package`，产出全部安装包；
 5. 创建与上游同名的 Release（tag 与上游一致），并附上 `SHA256SUMS.txt`。
+
+## 目录约定
+
+| 要改的东西 | 放在哪里 |
+| --- | --- |
+| 新增文件（打包脚本、图标等） | `overlay/`，路径与上游源码树一致 |
+| `package.json`（依赖、scripts、resolutions） | `patches/package-extras.json` |
+| 修改上游已有文件 | `patches/0001-linux-code.patch` |
+
+`patches/0001-linux-code.patch` 不会包含 `package.json` 和新增文件——`tools/regenerate-patch.mjs` 会自动排除它们，这样上游频繁变动的依赖表就不会再把补丁打挂。
 
 ## 手动触发
 
@@ -38,31 +53,18 @@ Actions → **Build Linux Packages** → Run workflow：
 
 ## 刷新补丁
 
-当自动构建在 **Apply Linux patches** 步骤失败时，说明上游修改了补丁涉及的代码，需要人工把补丁对齐到新版本：
+当自动构建在 **Apply Linux patches** 步骤失败时，说明上游修改了补丁涉及的代码，需要把补丁对齐到新版本：
 
 ```bash
-# 1. 以新版本为基准克隆上游（这正是补丁的“共同父提交”位置）
-git clone --depth 1 --branch <新 tag> --recurse-submodules --shallow-submodules \
-  https://github.com/desktop/desktop.git refresh
-cd refresh
-
-# 2. 拉取补丁当前基准（--3way 需要它的 blob），按顺序应用现有补丁
-git fetch --depth 1 origin \
-  refs/tags/<patches/base.txt 里的旧 tag>:refs/tags/patch-base
-for p in /path/to/repo/patches/*.patch; do git apply --3way "$p"; done
-
-# 3. 若提示冲突：手动编辑带冲突标记的文件解决冲突
-
-# 4. 分别重新生成两个补丁（代码 / 资源分开，便于 review）并更新基准
-git add -A
-git diff --binary --cached HEAD -- . ':(exclude)app/static/linux/logos' \
-  > /path/to/repo/patches/0001-linux-code.patch
-git diff --binary --cached HEAD -- app/static/linux/logos \
-  > /path/to/repo/patches/0002-linux-assets.patch
-echo "<新 tag>" > /path/to/repo/patches/base.txt
-
-# 5. 提交推送后重新运行 workflow
+# 一条命令完成：克隆新版本 → 复制 overlay → 合并 package.json → 3-way 重放补丁 → 重新生成补丁 + 更新基准
+tools/refresh.sh 3.6.8
 ```
+
+- 工作目录默认是 `refresh/`（已加入 `.gitignore`），也可用第二个参数指定。
+- 如果提示冲突，进入该目录手动解决冲突，然后按脚本打印的命令重新生成补丁并更新 `patches/base.txt`。
+- 刷新后可以顺手在同一个目录构建验证：`cd refresh && yarn install && yarn build:prod && yarn package`。
+
+提交推送后重新运行 workflow 即可。
 
 ## 说明
 

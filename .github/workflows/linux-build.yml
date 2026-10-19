@@ -153,6 +153,12 @@ jobs:
             git fetch --depth 1 origin "refs/tags/${BASE}:refs/tags/patch-base"
           fi
 
+      - name: Apply overlay files
+        run: node tools/apply-overlay.mjs overlay work
+
+      - name: Apply package.json extras
+        run: node tools/apply-package-extras.mjs patches/package-extras.json work/package.json
+
       - name: Apply Linux patches
         env:
           UPSTREAM_TAG: ${{ needs.check.outputs.tag }}
@@ -179,17 +185,11 @@ jobs:
                 echo "### 本地刷新步骤"
                 echo ""
                 echo '```bash'
-                echo "git clone --depth 1 --branch $UPSTREAM_TAG --recurse-submodules --shallow-submodules \\"
-                echo "  https://github.com/desktop/desktop.git refresh"
-                echo "cd refresh"
-                echo "git fetch --depth 1 origin refs/tags/$BASE:refs/tags/patch-base"
-                echo "for p in <repo>/patches/*.patch; do git apply --3way \"\$p\"; done"
-                echo "# 手动解决冲突后，分别重新生成两个补丁并更新基准："
-                echo "git add -A"
-                echo "git diff --binary --cached HEAD -- . ':(exclude)app/static/linux/logos' > <repo>/patches/0001-linux-code.patch"
-                echo "git diff --binary --cached HEAD -- app/static/linux/logos > <repo>/patches/0002-linux-assets.patch"
-                echo "echo $UPSTREAM_TAG > <repo>/patches/base.txt"
+                echo "tools/refresh.sh $UPSTREAM_TAG"
                 echo '```'
+                echo ""
+                echo "脚本会克隆对应版本、复制 \`overlay/\`、合并 \`patches/package-extras.json\`，并以 3-way 重放补丁；"
+                echo "如仍有冲突，按提示手动解决后会重新生成 \`patches/0001-linux-code.patch\`。"
               } >> "$GITHUB_STEP_SUMMARY"
               echo "::error::$(basename "$PATCH") 无法应用到 $UPSTREAM_TAG（基准 $BASE），详见 Step Summary 的刷新指引。"
               exit 1

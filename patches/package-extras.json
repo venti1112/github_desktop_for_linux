@@ -1,0 +1,14 @@
+{
+  "scripts": {
+    "package": "ts-node --files -P script/tsconfig.json script/package.ts"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.15.3",
+    "electron-installer-debian": "^4.0.0",
+    "electron-installer-redhat": "^4.0.0",
+    "fs-extra": "^11.4.0"
+  },
+  "resolutions": {
+    "@types/react": "^16.14.62"
+  }
+}
