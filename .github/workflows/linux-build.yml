@@ -302,6 +302,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.check.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: ${{ needs.check.outputs.name }}
           body_path: ${{ runner.temp }}/release_body.txt
           files: artifacts/*
