@@ -11,7 +11,7 @@
 patches/0001-linux-code.patch       # 对上游已有文件的修改
 patches/package-extras.json         # package.json 的增量（依赖、scripts、resolutions）
 patches/base.txt                    # 补丁基准的上游 tag（生成补丁时的“共同父提交”）
-overlay/                            # 新增文件（打包脚本、图标），原样复制进源码树
+overlay/                            # 新增文件（打包脚本、图标、更新检查器等），原样复制进源码树
 tools/                              # overlay / extras 的应用与补丁刷新工具
 README.md
 LICENSE
@@ -35,11 +35,22 @@ LICENSE
 
 | 要改的东西 | 放在哪里 |
 | --- | --- |
-| 新增文件（打包脚本、图标等） | `overlay/`，路径与上游源码树一致 |
+| 新增文件（打包脚本、图标、更新检查器等） | `overlay/`，路径与上游源码树一致 |
 | `package.json`（依赖、scripts、resolutions） | `patches/package-extras.json` |
 | 修改上游已有文件 | `patches/0001-linux-code.patch` |
 
 `patches/0001-linux-code.patch` 不会包含 `package.json` 和新增文件——`tools/regenerate-patch.mjs` 会自动排除它们，这样上游频繁变动的依赖表就不会再把补丁打挂。
+
+## 更新检查
+
+Linux 构建内置更新检查器，只查询本仓库的 Releases，不会自动下载或安装：
+
+- 稳定版查询 `/releases/latest`；版本号含 `-beta` 时查询 `/releases`，按 semver 选择最新（包含 prerelease）；
+- 后台：启动时及每 4 小时检查一次，同一进程内每小时最多请求一次并使用 ETag 条件请求；发现新版本时显示应用内横幅，不弹窗；
+- 手动：About → Check for Updates 总是发起检查，并弹出原生对话框，按钮只打开对应 Release 页面；
+- 横幅按版本记忆，同一版本被关闭后不会再次出现。
+
+检查器实现位于 `overlay/app/src/main-process/linux-update-checker.ts`，版本选择逻辑在 `overlay/app/src/lib/linux-update.ts`。调试时可用 `DESKTOP_LINUX_UPDATE_REPO` 和 `DESKTOP_LINUX_UPDATE_CURRENT_VERSION` 覆盖仓库与当前版本。
 
 ## 手动触发
 

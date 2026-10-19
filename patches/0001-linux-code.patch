@@ -1,3 +1,23 @@
+diff --git a/app/src/lib/ipc-shared.ts b/app/src/lib/ipc-shared.ts
+index 18ddc16903cdf5b3b6887a6ea122b18c092ccd95..c2137c341531172bea22ccc0db8343805065fc71 100644
+--- a/app/src/lib/ipc-shared.ts
++++ b/app/src/lib/ipc-shared.ts
+@@ -17,6 +17,7 @@ import { DesktopNotificationPermission } from 'desktop-notifications'
+ import { NotificationCallback } from 'desktop-notifications'
+ import { DesktopAliveEvent } from './stores/alive-store'
+ import { CLIAction } from './cli-action'
++import type { ILinuxUpdateResult } from './linux-update'
+ 
+ /**
+  * Defines the simplex IPC channel names we use from the renderer
+@@ -122,6 +123,7 @@ export type RequestResponseChannels = {
+   'is-in-application-folder': () => Promise<boolean | null>
+   'move-to-applications-folder': () => Promise<void>
+   'check-for-updates': (url: string) => Promise<Error | undefined>
++  'check-linux-update': (interactive: boolean) => Promise<ILinuxUpdateResult>
+   'get-current-window-state': () => Promise<WindowState | undefined>
+   'get-current-window-zoom-factor': () => Promise<number | undefined>
+   'resolve-proxy': (url: string) => Promise<string>
 diff --git a/app/src/lib/notifications/show-notification.ts b/app/src/lib/notifications/show-notification.ts
 index ca8b2a66f8eb414040426f081438820d0b7a5449..0781c11dd08ee5deef6233ccad8481a90280c739 100644
 --- a/app/src/lib/notifications/show-notification.ts
@@ -43,10 +63,18 @@ index 53d7505b28ce2c550e5ef75ad0cbb0d81e3c67c3..e434031d5ed02f7ef29cd829a33fa63c
        autoUpdater.setFeedURL({ url: await trySetUpdaterGuid(url) })
        autoUpdater.checkForUpdates()
 diff --git a/app/src/main-process/main.ts b/app/src/main-process/main.ts
-index fd1f35025e6c85263ed43ec5340333e8dbd8dd7e..c8aeca863bbdc99e08d417477a4820761472841e 100644
+index fd1f35025e6c85263ed43ec5340333e8dbd8dd7e..1bce175c95052f653c65dbb1a386517cd82d183f 100644
 --- a/app/src/main-process/main.ts
 +++ b/app/src/main-process/main.ts
-@@ -49,9 +49,12 @@ import { getMainGUID, saveGUIDFile } from '../lib/get-main-guid'
+@@ -14,6 +14,7 @@ import {
+ import * as Fs from 'fs'
+ 
+ import { AppWindow } from './app-window'
++import { checkForLinuxUpdate } from './linux-update-checker'
+ import { buildDefaultMenu, getAllMenuItems } from './menu'
+ import { shellNeedsPatching, updateEnvironmentForProcess } from '../lib/shell'
+ import { parseAppURL } from '../lib/parse-app-url'
+@@ -49,9 +50,12 @@ import { getMainGUID, saveGUIDFile } from '../lib/get-main-guid'
  import {
    getNotificationsPermission,
    requestNotificationsPermission,
@@ -61,7 +89,7 @@ index fd1f35025e6c85263ed43ec5340333e8dbd8dd7e..c8aeca863bbdc99e08d417477a482076
  import parseCommandLineArgs from 'minimist'
  import { CLIAction } from '../lib/cli-action'
  
-@@ -192,7 +195,26 @@ if (!handlingSquirrelEvent) {
+@@ -192,7 +196,26 @@ if (!handlingSquirrelEvent) {
        mainWindow.focus()
      }
  
@@ -89,7 +117,18 @@ index fd1f35025e6c85263ed43ec5340333e8dbd8dd7e..c8aeca863bbdc99e08d417477a482076
    })
  
    if (isDuplicateInstance) {
-@@ -755,7 +777,9 @@ app.on('ready', () => {
+@@ -537,6 +560,10 @@ app.on('ready', () => {
+     mainWindow?.checkForUpdates(url)
+   )
+ 
++  ipcMain.handle('check-linux-update', async (_, interactive) =>
++    checkForLinuxUpdate(interactive)
++  )
++
+   ipcMain.on('quit-and-install-updates', () =>
+     mainWindow?.quitAndInstallUpdate()
+   )
+@@ -755,7 +782,9 @@ app.on('ready', () => {
    ipcMain.handle('save-guid', (_, guid) => saveGUIDFile(guid))
  
    ipcMain.handle('show-notification', async (_, title, body, userInfo) =>
@@ -219,6 +258,18 @@ index 0ae209ca463601162da232e69eada48fc7cc3779..67d2b03669b663b14c8ecf94c490d62a
 +    return null
 +  }
  }
+diff --git a/app/src/ui/about/about-test-dialog.tsx b/app/src/ui/about/about-test-dialog.tsx
+index 0441cb296ce1173f4348aa6ff925307663c63205..1bd4371ce4b39b6a11c70daeaebebc123c4e2b1e 100644
+--- a/app/src/ui/about/about-test-dialog.tsx
++++ b/app/src/ui/about/about-test-dialog.tsx
+@@ -37,6 +37,7 @@ export class AboutTestDialog extends React.Component<
+         newReleases: [],
+         prioritizeUpdate: false,
+         prioritizeUpdateInfoUrl: undefined,
++        linuxUpdate: null,
+       },
+     }
+   }
 diff --git a/app/src/ui/app-menu/menu-pane.tsx b/app/src/ui/app-menu/menu-pane.tsx
 index 154855c9b14dccb16bec022e811093e8b5046cf5..f5743a4b565f242f962539b38e6a79cc0bf2b9bf 100644
 --- a/app/src/ui/app-menu/menu-pane.tsx
@@ -232,6 +283,141 @@ index 154855c9b14dccb16bec022e811093e8b5046cf5..f5743a4b565f242f962539b38e6a79cc
    (supportedKeys as readonly string[]).includes(key)
  
  const isPrintableCharacterKey = (key: string) =>
+diff --git a/app/src/ui/app.tsx b/app/src/ui/app.tsx
+index d179bf4e1f5a73c844f0dc3826057c472a2529a5..87f5769214f1c856a24938c9fb918e616163822f 100644
+--- a/app/src/ui/app.tsx
++++ b/app/src/ui/app.tsx
+@@ -239,6 +239,12 @@ const HourInMilliseconds = MinuteInMilliseconds * 60
+  */
+ const UpdateCheckInterval = 4 * HourInMilliseconds
+ 
++/**
++ * The last Linux update version the user has dismissed. Used to avoid showing
++ * the same update banner again on every background check.
++ */
++const LinuxUpdateDismissedVersionKey = 'linux-update-dismissed-version'
++
+ /**
+  * Send usage stats every 4 hours
+  */
+@@ -333,6 +339,17 @@ export class App extends React.Component<IAppProps, IAppState> {
+     updateStore.onDidChange(async state => {
+       const status = state.status
+ 
++      if (__LINUX__) {
++        if (state.linuxUpdate === null) {
++          this.props.dispatcher.setUpdateBannerVisibility(false)
++        } else if (
++          state.linuxUpdate.version !==
++          localStorage.getItem(LinuxUpdateDismissedVersionKey)
++        ) {
++          this.props.dispatcher.setUpdateBannerVisibility(true)
++        }
++      }
++
+       if (
+         !(__RELEASE_CHANNEL__ === 'development') &&
+         status === UpdateStatus.UpdateReady
+@@ -660,7 +677,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+     inBackground: boolean,
+     skipGuidCheck: boolean = false
+   ) {
+-    if (__LINUX__ || __RELEASE_CHANNEL__ === 'development') {
++    if (__RELEASE_CHANNEL__ === 'development') {
+       return
+     }
+ 
+@@ -1548,8 +1565,17 @@ export class App extends React.Component<IAppProps, IAppState> {
+     )
+   }
+ 
+-  private onUpdateAvailableDismissed = () =>
++  private onUpdateAvailableDismissed = () => {
++    if (__LINUX__) {
++      const update = updateStore.state.linuxUpdate
++
++      if (update !== null) {
++        localStorage.setItem(LinuxUpdateDismissedVersionKey, update.version)
++      }
++    }
++
+     this.props.dispatcher.setUpdateBannerVisibility(false)
++  }
+ 
+   private allPopupContent(): JSX.Element | null {
+     const { allPopups } = this.state
+@@ -3914,6 +3940,7 @@ export class App extends React.Component<IAppProps, IAppState> {
+         }
+         prioritizeUpdate={updateStore.state.prioritizeUpdate}
+         prioritizeUpdateInfoUrl={updateStore.state.prioritizeUpdateInfoUrl}
++        linuxUpdate={updateStore.state.linuxUpdate}
+         onDismissed={this.onUpdateAvailableDismissed}
+         isUpdateShowcaseVisible={this.state.isUpdateShowcaseVisible}
+         emoji={this.state.emoji}
+diff --git a/app/src/ui/banners/update-available.tsx b/app/src/ui/banners/update-available.tsx
+index 8e03222d9e10bca249082a38701d5528f5ac3cb8..c80b2ed31220d7a6a1b5ce90c06af9eb699396f6 100644
+--- a/app/src/ui/banners/update-available.tsx
++++ b/app/src/ui/banners/update-available.tsx
+@@ -16,6 +16,7 @@ import { Banner } from './banner'
+ import { ReleaseNotesUri } from '../lib/releases'
+ import { RichText } from '../lib/rich-text'
+ import { Emoji } from '../../lib/emoji'
++import type { ILinuxUpdateInfo } from '../../lib/linux-update'
+ 
+ interface IUpdateAvailableProps {
+   readonly dispatcher: Dispatcher
+@@ -26,6 +27,7 @@ interface IUpdateAvailableProps {
+   readonly onDismissed: () => void
+   readonly prioritizeUpdate: boolean
+   readonly prioritizeUpdateInfoUrl: string | undefined
++  readonly linuxUpdate: ILinuxUpdateInfo | null
+ }
+ 
+ /**
+@@ -70,6 +72,26 @@ export class UpdateAvailable extends React.Component<IUpdateAvailableProps> {
+   }
+ 
+   private renderMessage = () => {
++    if (__LINUX__) {
++      const update = this.props.linuxUpdate
++
++      if (update !== null) {
++        return (
++          <span>
++            GitHub Desktop {update.version} is available.{' '}
++            <LinkButton onClick={this.openLinuxReleasePage}>
++              View release
++            </LinkButton>{' '}
++            or <LinkButton onClick={this.onDismissed}>dismiss</LinkButton>.
++          </span>
++        )
++      }
++
++      if (!this.props.isUpdateShowcaseVisible) {
++        return <span>An update is available.</span>
++      }
++    }
++
+     if (this.props.isX64ToARM64ImmediateAutoUpdate) {
+       return (
+         <span onSubmit={this.updateNow}>
+@@ -170,6 +192,16 @@ export class UpdateAvailable extends React.Component<IUpdateAvailableProps> {
+     this.dismissUpdateShowCaseVisibility()
+   }
+ 
++  private openLinuxReleasePage = () => {
++    const update = this.props.linuxUpdate
++
++    if (update !== null) {
++      shell.openExternal(update.releaseUrl)
++    }
++
++    this.onDismissed()
++  }
++
+   private updateNow = () => {
+     if (
+       (__RELEASE_CHANNEL__ === 'development' ||
 diff --git a/app/src/ui/index.tsx b/app/src/ui/index.tsx
 index 6ce3932cad27427db367a54750f32a265e367bfb..3a954876acbce0141fb5b71ebc115435450ccfc5 100644
 --- a/app/src/ui/index.tsx
@@ -245,28 +431,105 @@ index 6ce3932cad27427db367a54750f32a265e367bfb..3a954876acbce0141fb5b71ebc115435
  
  ReactDOM.render(
    <App
+diff --git a/app/src/ui/lib/update-store.ts b/app/src/ui/lib/update-store.ts
+index ce26a5ab4fda20e97460f2117905a1457b833d79..73c899b7d8e4dc93f0cbb3f5b97d04a8ffb4500a 100644
+--- a/app/src/ui/lib/update-store.ts
++++ b/app/src/ui/lib/update-store.ts
+@@ -3,6 +3,7 @@ const lastSuccessfulCheckKey = 'last-successful-update-check'
+ import { Emitter, Disposable } from 'event-kit'
+ 
+ import {
++  checkForLinuxUpdates,
+   checkForUpdates,
+   isRunningUnderARM64Translation,
+   onAutoUpdaterCheckingForUpdate,
+@@ -24,6 +25,7 @@ import { offsetFromNow } from '../../lib/offset-from'
+ import { gte, SemVer } from 'semver'
+ import { getVersion } from './app-proxy'
+ import { getUserAgent } from '../../lib/http'
++import type { ILinuxUpdateInfo } from '../../lib/linux-update'
+ 
+ /** The last version a showcase was seen. */
+ export const lastShowCaseVersionSeen = 'version-of-last-showcase'
+@@ -53,6 +55,7 @@ export interface IUpdateState {
+   newReleases: ReadonlyArray<ReleaseSummary> | null
+   prioritizeUpdate: boolean
+   prioritizeUpdateInfoUrl: string | undefined
++  linuxUpdate: ILinuxUpdateInfo | null
+ }
+ 
+ /** A store which contains the current state of the auto updater. */
+@@ -62,6 +65,7 @@ class UpdateStore {
+   private lastSuccessfulCheck: Date | null = null
+   private newReleases: ReadonlyArray<ReleaseSummary> | null = null
+   private isX64ToARM64ImmediateAutoUpdate: boolean = false
++  private linuxUpdate: ILinuxUpdateInfo | null = null
+ 
+   /** Is the most recent update check user initiated? */
+   private userInitiatedUpdate = true
+@@ -185,6 +189,7 @@ class UpdateStore {
+       isX64ToARM64ImmediateAutoUpdate: this.isX64ToARM64ImmediateAutoUpdate,
+       prioritizeUpdate: this.prioritizeUpdate,
+       prioritizeUpdateInfoUrl: this.prioritizeUpdateInfoUrl,
++      linuxUpdate: this.linuxUpdate,
+     }
+   }
+ 
+@@ -208,6 +213,28 @@ class UpdateStore {
+       return
+     }
+ 
++    if (__LINUX__) {
++      this.userInitiatedUpdate = !inBackground
++
++      try {
++        const result = await checkForLinuxUpdates(!inBackground)
++
++        if (result.error !== null) {
++          // Interactive checks already show the error in a native dialog
++          // shown by the main process. Keep background failures quiet.
++          log.error(`Error checking for Linux updates: ${result.error}`)
++          return
++        }
++
++        this.linuxUpdate = result.update
++        this.emitDidChange()
++      } catch (e) {
++        log.error('Error checking for Linux updates', e)
++      }
++
++      return
++    }
++
+     const updatesUrl = await this.getUpdatesUrl(skipGuidCheck)
+ 
+     if (updatesUrl === null) {
+diff --git a/app/src/ui/main-process-proxy.ts b/app/src/ui/main-process-proxy.ts
+index a231f70e0abb94e4a788ac6e9f90d0ab703de3f2..2aa74e812c8e807df32d5d0496832da07ffc3a45 100644
+--- a/app/src/ui/main-process-proxy.ts
++++ b/app/src/ui/main-process-proxy.ts
+@@ -234,6 +234,9 @@ export const setWindowZoomFactor = sendProxy('set-window-zoom-factor', 1)
+ /** Tell the main process to check for app updates */
+ export const checkForUpdates = invokeProxy('check-for-updates', 1)
+ 
++/** Tell the main process to check for Linux updates */
++export const checkForLinuxUpdates = invokeProxy('check-linux-update', 1)
++
+ /** Tell the main process to quit the app and install updates */
+ export const quitAndInstallUpdate = sendProxy('quit-and-install-updates', 0)
+ 
 diff --git a/app/test/unit/ipc-contract-test.ts b/app/test/unit/ipc-contract-test.ts
-index 900bde503f79a94a398a59f40e97199508d736f8..cffe80ca401fc6b4f54da2828f0ab9fdb1a140df 100644
+index 900bde503f79a94a398a59f40e97199508d736f8..5df8bcaced280ab692f0cd7707fd7de53d8dbdd0 100644
 --- a/app/test/unit/ipc-contract-test.ts
 +++ b/app/test/unit/ipc-contract-test.ts
-@@ -110,7 +110,7 @@ describe('IPC channel contract', () => {
-         expectedRequestChannels
-       const isExhaustive: AssertExactUnion<
-         keyof RequestChannels,
--        typeof expectedRequestChannels[number]
-+        (typeof expectedRequestChannels)[number]
-       > = true
- 
-       assert.equal(isValid.length, expectedRequestChannels.length)
-@@ -140,7 +140,7 @@ describe('IPC channel contract', () => {
-         expectedResponseChannels
-       const isExhaustive: AssertExactUnion<
-         keyof RequestResponseChannels,
--        typeof expectedResponseChannels[number]
-+        (typeof expectedResponseChannels)[number]
-       > = true
- 
-       assert.equal(isValid.length, expectedResponseChannels.length)
+@@ -89,6 +89,7 @@ describe('IPC channel contract', () => {
+     'is-in-application-folder',
+     'move-to-applications-folder',
+     'check-for-updates',
++    'check-linux-update',
+     'get-current-window-state',
+     'get-current-window-zoom-factor',
+     'resolve-proxy',
 diff --git a/app/test/unit/main-process/menu-test.ts b/app/test/unit/main-process/menu-test.ts
 index 6eeb8133a6ba43bff5345e69ec3f60fd815e051b..53b19ee004da85fb0d1af694b22f203bdb35fc7a 100644
 --- a/app/test/unit/main-process/menu-test.ts
