@@ -81,6 +81,8 @@ Actions → **Check and Dispatch Linux Builds** → Run workflow：
 
 该 workflow 也会每天自动运行。它只派发缺口版本，不会重复构建已有 Release。首次使用或想预览时，建议先勾选 `dry_run`。
 
+缺口是两条时间线扫描结果的并集。例如本地只有 `3.6.7` 时，会列出 `3.6.8-beta1` 和 `3.6.8-beta2`；如果只想补 `3.6.8-beta2`，可以先手动构建它，之后 semver 停止点就是 beta2，不会再自动补 beta1。
+
 ### 手动构建单个版本
 
 Actions → **Build Linux Packages** → Run workflow：
